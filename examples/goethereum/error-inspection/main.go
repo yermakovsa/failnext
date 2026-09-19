@@ -17,23 +17,23 @@ import (
 func main() {
 	timeout := 5 * time.Second
 
-	// Deterministic demo: both upstreams are closed local ports.
+	// Deterministic demo: both endpoints are closed local ports.
 	// If one is unexpectedly open on your machine, change the ports.
-	upstreams := []string{
-		"http://127.0.0.1:65534",
-		"http://127.0.0.1:65533",
+	endpoints := []rcpx.Endpoint{
+		{ID: "primary", URL: "http://127.0.0.1:65534"},
+		{ID: "backup", URL: "http://127.0.0.1:65533"},
 	}
 
 	fmt.Println("== demo 1: AllUpstreamsFailedError (exhaust all upstreams) ==")
-	demoAllUpstreamsFailed(timeout, upstreams)
+	demoAllUpstreamsFailed(timeout, endpoints)
 
 	fmt.Println()
 	fmt.Println("== demo 2: NonIdempotentBlockedError (no failover for writes by default) ==")
-	demoNonIdempotentBlocked(timeout, upstreams)
+	demoNonIdempotentBlocked(timeout, endpoints)
 }
 
-func demoAllUpstreamsFailed(timeout time.Duration, upstreams []string) {
-	rpcClient, err := dialRPC(timeout, upstreams, false /* allowNonIdempotent */)
+func demoAllUpstreamsFailed(timeout time.Duration, endpoints []rcpx.Endpoint) {
+	rpcClient, err := dialRPC(timeout, endpoints, false /* allowNonIdempotent */)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "setup: %v\n", err)
 		return
@@ -71,8 +71,8 @@ func demoAllUpstreamsFailed(timeout time.Duration, upstreams []string) {
 	)
 }
 
-func demoNonIdempotentBlocked(timeout time.Duration, upstreams []string) {
-	rpcClient, err := dialRPC(timeout, upstreams, false /* allowNonIdempotent */)
+func demoNonIdempotentBlocked(timeout time.Duration, endpoints []rcpx.Endpoint) {
+	rpcClient, err := dialRPC(timeout, endpoints, false /* allowNonIdempotent */)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "setup: %v\n", err)
 		return
@@ -100,9 +100,9 @@ func demoNonIdempotentBlocked(timeout time.Duration, upstreams []string) {
 	fmt.Printf("cause=%v\n", be.Unwrap())
 }
 
-func dialRPC(timeout time.Duration, upstreams []string, allowNonIdempotent bool) (*rpc.Client, error) {
-	rt, err := rcpx.NewRoundTripper(rcpx.Config{
-		Upstreams:          upstreams,
+func dialRPC(timeout time.Duration, endpoints []rcpx.Endpoint, allowNonIdempotent bool) (*rpc.Client, error) {
+	rt, err := rcpx.New(rcpx.Config{
+		Endpoints:          endpoints,
 		Base:               http.DefaultTransport,
 		AllowNonIdempotent: allowNonIdempotent,
 	})
@@ -118,5 +118,5 @@ func dialRPC(timeout time.Duration, upstreams []string, allowNonIdempotent bool)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	return rpc.DialOptions(ctx, upstreams[0], rpc.WithHTTPClient(httpClient))
+	return rpc.DialOptions(ctx, endpoints[0].URL, rpc.WithHTTPClient(httpClient))
 }

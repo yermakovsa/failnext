@@ -51,12 +51,12 @@ func main() {
 		},
 	}
 
-	rt, err := rcpx.NewRoundTripper(rcpx.Config{
-		Upstreams: upstreams,
+	rt, err := rcpx.New(rcpx.Config{
+		Endpoints: endpointsFromURLs(upstreams),
 		Base:      baseTransport,
-		Cooldown: &rcpx.CooldownConfig{
-			FailAfterConsecutive: failAfter,
-			Duration:             cooldown,
+		Cooldown: rcpx.CooldownConfig{
+			Threshold: failAfter,
+			Duration:  cooldown,
 		},
 	})
 	if err != nil {
@@ -72,7 +72,7 @@ func main() {
 	ctxDial, cancelDial := context.WithTimeout(context.Background(), timeout)
 	defer cancelDial()
 
-	// Dial using the first URL (can be bad); rcpx selects the actual upstream per attempt.
+	// Dial using the first URL (can be bad); rcpx selects the actual endpoint per attempt.
 	rpcClient, err := rpc.DialOptions(ctxDial, upstreams[0], rpc.WithHTTPClient(httpClient))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dial rpc: %v\n", err)
@@ -117,6 +117,17 @@ func (l *loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 		l.onReq(req.URL.String())
 	}
 	return l.rt.RoundTrip(req)
+}
+
+func endpointsFromURLs(urls []string) []rcpx.Endpoint {
+	endpoints := make([]rcpx.Endpoint, len(urls))
+	for i, url := range urls {
+		endpoints[i] = rcpx.Endpoint{
+			ID:  rcpx.EndpointID(fmt.Sprintf("endpoint-%d", i+1)),
+			URL: url,
+		}
+	}
+	return endpoints
 }
 
 func splitNonEmpty(csv string) []string {

@@ -24,8 +24,8 @@ func main() {
 		os.Exit(2)
 	}
 
-	rt, err := rcpx.NewRoundTripper(rcpx.Config{
-		Upstreams: upstreams,
+	rt, err := rcpx.New(rcpx.Config{
+		Endpoints: endpointsFromURLs(upstreams),
 		Base:      http.DefaultTransport,
 		// Cooldown defaults enabled.
 		// AllowNonIdempotent defaults false (safe).
@@ -43,7 +43,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// The dial URL can be any upstream; rcpx selects the actual upstream per attempt.
+	// The dial URL can be any upstream; rcpx selects the actual endpoint per attempt.
 	rpcClient, err := rpc.DialOptions(ctx, upstreams[0], rpc.WithHTTPClient(httpClient))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dial rpc: %v\n", err)
@@ -66,6 +66,17 @@ func main() {
 	}
 
 	fmt.Printf("ok chainID=%s blockNumber=%d\n", chainID, blockNum)
+}
+
+func endpointsFromURLs(urls []string) []rcpx.Endpoint {
+	endpoints := make([]rcpx.Endpoint, len(urls))
+	for i, url := range urls {
+		endpoints[i] = rcpx.Endpoint{
+			ID:  rcpx.EndpointID(fmt.Sprintf("endpoint-%d", i+1)),
+			URL: url,
+		}
+	}
+	return endpoints
 }
 
 func splitNonEmpty(csv string) []string {

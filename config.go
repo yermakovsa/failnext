@@ -8,21 +8,28 @@ import (
 	"time"
 )
 
+// EndpointID is the stable application-visible identity of a configured endpoint.
+type EndpointID string
+
+// Endpoint configures one complete physical HTTP attempt destination.
+type Endpoint struct {
+	ID  EndpointID
+	URL string
+}
+
 // Config configures an rcpx RoundTripper.
 //
-// It selects which upstream URL to use per attempt. The caller controls
-// TLS/proxy/timeouts via the base transport.
+// Endpoints define the fixed priority order for physical attempts. Each endpoint
+// URL is a complete destination; rcpx does not join request paths or queries.
 type Config struct {
-	// Upstreams are tried in priority order. Each entry must be an absolute
-	// http/https URL. Requests are sent to that exact URL (no path joining).
-	Upstreams []string
+	Endpoints []Endpoint
 
 	// Base transport used for all attempts. If nil, http.DefaultTransport is used.
 	Base http.RoundTripper
 
-	// Cooldown behavior after consecutive retryable failures. If nil, cooldown is
-	// enabled with defaults.
-	Cooldown *CooldownConfig
+	// Cooldown behavior after consecutive retryable failures. The zero value
+	// enables cooldown with defaults.
+	Cooldown CooldownConfig
 
 	// If false, rcpx will not retry/failover non-idempotent methods.
 	AllowNonIdempotent bool
@@ -35,9 +42,9 @@ type Config struct {
 	// Retry/failover policy hook. If nil, the default policy is used.
 	RetryPolicy RetryPolicy
 
-	// AdditionalRetryableStatusCodes are HTTP status codes retried in addition to
-	// the defaults: 429, 502, 503, and 504.
-	AdditionalRetryableStatusCodes []int
+	// AdditionalTriggerStatusCodes are additional three-digit HTTP status codes
+	// that trigger the existing failover machinery.
+	AdditionalTriggerStatusCodes []int
 
 	// AdditionalNonIdempotentMethods are JSON-RPC method names treated as
 	// non-idempotent in addition to the built-ins.
@@ -74,43 +81,42 @@ type AttemptInfo struct {
 	Final bool
 }
 
-// CooldownConfig configures cooldown behavior.
+// CooldownConfig configures passive endpoint cooldown behavior.
 //
-// Zero values use defaults; set Disabled to turn cooldown off.
+// The zero value enables cooldown with default threshold and duration. Set
+// Disabled to true only when Threshold and Duration are both zero.
 type CooldownConfig struct {
 	Disabled bool
 
 	// 0 => DefaultCooldownFailAfterConsecutive (unless Disabled=true)
-	FailAfterConsecutive int
+	Threshold int
 
 	// 0 => DefaultCooldownDuration (unless Disabled=true)
 	Duration time.Duration
-
-	// CountDeadlineExceeded records attempted context.DeadlineExceeded outcomes
-	// as cooldown failures. It does not affect context.Canceled.
-	CountDeadlineExceeded bool
 }
 
-// resolvedUpstream is the normalized form of a user-provided upstream string.
-type resolvedUpstream struct {
+// resolvedEndpoint is the normalized, transport-owned form of a configured
+// endpoint. The parsed URL is a complete physical attempt destination.
+type resolvedEndpoint struct {
+	id  EndpointID
 	raw string
 	url *url.URL
 }
 
 type effectiveCooldown struct {
-	enabled               bool
-	failAfter             int
-	duration              time.Duration
-	countDeadlineExceeded bool
+	enabled   bool
+	threshold int
+	duration  time.Duration
 }
 
 // resolvedConfig is the internal, fully-normalized configuration used at runtime.
 type resolvedConfig struct {
-	upstreams []resolvedUpstream
-	base      http.RoundTripper
-	cooldown  effectiveCooldown
-	allowNI   bool
-	bodyCap   int
+	endpoints     []resolvedEndpoint
+	endpointIndex map[EndpointID]int
+	base          http.RoundTripper
+	cooldown      effectiveCooldown
+	allowNI       bool
+	bodyCap       int
 
 	policy    RetryPolicy
 	onAttempt func(AttemptInfo)
@@ -120,30 +126,45 @@ type resolvedConfig struct {
 }
 
 func resolveConfig(cfg Config) (resolvedConfig, error) {
-	if len(cfg.Upstreams) == 0 {
-		return resolvedConfig{}, ErrNoUpstreams
+	if len(cfg.Endpoints) == 0 {
+		return resolvedConfig{}, fmt.Errorf("rcpx: no endpoints")
 	}
 
-	upstreams := make([]resolvedUpstream, 0, len(cfg.Upstreams))
-	for _, raw := range cfg.Upstreams {
-		u, err := url.Parse(raw)
-		if err != nil {
-			return resolvedConfig{}, fmt.Errorf("rcpx: invalid upstream %q: %w", raw, err)
+	endpoints := make([]resolvedEndpoint, 0, len(cfg.Endpoints))
+	endpointIndex := make(map[EndpointID]int, len(cfg.Endpoints))
+
+	for i, endpoint := range cfg.Endpoints {
+		if endpoint.ID == "" {
+			return resolvedConfig{}, fmt.Errorf("rcpx: invalid endpoint at index %d: empty id", i)
+		}
+		if _, exists := endpointIndex[endpoint.ID]; exists {
+			return resolvedConfig{}, fmt.Errorf("rcpx: duplicate endpoint id %q", endpoint.ID)
 		}
 
-		// Must be an absolute http/https URL.
+		u, err := url.Parse(endpoint.URL)
+		if err != nil {
+			return resolvedConfig{}, fmt.Errorf("rcpx: invalid endpoint %q url %q: %w", endpoint.ID, endpoint.URL, err)
+		}
+
 		if !u.IsAbs() {
-			return resolvedConfig{}, fmt.Errorf("rcpx: invalid upstream %q: must be absolute url", raw)
+			return resolvedConfig{}, fmt.Errorf("rcpx: invalid endpoint %q url %q: must be absolute", endpoint.ID, endpoint.URL)
 		}
 		if u.Scheme != "http" && u.Scheme != "https" {
-			return resolvedConfig{}, fmt.Errorf("rcpx: invalid upstream %q: unsupported scheme %q", raw, u.Scheme)
+			return resolvedConfig{}, fmt.Errorf("rcpx: invalid endpoint %q url %q: unsupported scheme %q", endpoint.ID, endpoint.URL, u.Scheme)
 		}
 		if u.Host == "" {
-			return resolvedConfig{}, fmt.Errorf("rcpx: invalid upstream %q: missing host", raw)
+			return resolvedConfig{}, fmt.Errorf("rcpx: invalid endpoint %q url %q: missing host", endpoint.ID, endpoint.URL)
+		}
+		if strings.Contains(endpoint.URL, "#") {
+			return resolvedConfig{}, fmt.Errorf("rcpx: invalid endpoint %q url %q: fragments are not allowed", endpoint.ID, endpoint.URL)
 		}
 
-		// Preserve as parsed; contract is “send to that URL” (scheme/host/path/query).
-		upstreams = append(upstreams, resolvedUpstream{raw: raw, url: u})
+		endpointIndex[endpoint.ID] = len(endpoints)
+		endpoints = append(endpoints, resolvedEndpoint{
+			id:  endpoint.ID,
+			raw: endpoint.URL,
+			url: u,
+		})
 	}
 
 	base := cfg.Base
@@ -169,7 +190,7 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 		policy = defaultRetryPolicy
 	}
 
-	statuses, err := resolveRetryableStatusCodes(cfg.AdditionalRetryableStatusCodes)
+	statuses, err := resolveTriggerStatusCodes(cfg.AdditionalTriggerStatusCodes)
 	if err != nil {
 		return resolvedConfig{}, err
 	}
@@ -180,58 +201,54 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 	}
 
 	return resolvedConfig{
-		upstreams: upstreams,
-		base:      base,
-		cooldown:  cooldown,
-		allowNI:   cfg.AllowNonIdempotent,
-		bodyCap:   bodyCap,
-		policy:    policy,
-		onAttempt: cfg.OnAttempt,
+		endpoints:     endpoints,
+		endpointIndex: endpointIndex,
+		base:          base,
+		cooldown:      cooldown,
+		allowNI:       cfg.AllowNonIdempotent,
+		bodyCap:       bodyCap,
+		policy:        policy,
+		onAttempt:     cfg.OnAttempt,
 
 		retryableStatuses:    statuses,
 		nonIdempotentMethods: nonIdempotentMethods,
 	}, nil
 }
 
-func resolveCooldown(cc *CooldownConfig) (effectiveCooldown, error) {
-	if cc == nil {
-		return effectiveCooldown{
-			enabled:   true,
-			failAfter: DefaultCooldownFailAfterConsecutive,
-			duration:  DefaultCooldownDuration,
-		}, nil
-	}
-
-	if cc.Disabled {
-		return effectiveCooldown{enabled: false}, nil
-	}
-
-	if cc.FailAfterConsecutive < 0 {
-		return effectiveCooldown{}, fmt.Errorf("rcpx: invalid Cooldown.FailAfterConsecutive %d", cc.FailAfterConsecutive)
+func resolveCooldown(cc CooldownConfig) (effectiveCooldown, error) {
+	if cc.Threshold < 0 {
+		return effectiveCooldown{}, fmt.Errorf("rcpx: invalid Cooldown.Threshold %d", cc.Threshold)
 	}
 	if cc.Duration < 0 {
 		return effectiveCooldown{}, fmt.Errorf("rcpx: invalid Cooldown.Duration %s", cc.Duration)
 	}
-
-	failAfter := cc.FailAfterConsecutive
-	if failAfter == 0 {
-		failAfter = DefaultCooldownFailAfterConsecutive
+	if cc.Disabled {
+		if cc.Threshold != 0 || cc.Duration != 0 {
+			return effectiveCooldown{}, fmt.Errorf("rcpx: invalid Cooldown: Disabled cannot be combined with Threshold or Duration")
+		}
+		return effectiveCooldown{enabled: false}, nil
 	}
 
-	dur := cc.Duration
-	if dur == 0 {
-		dur = DefaultCooldownDuration
+	threshold := cc.Threshold
+	if threshold == 0 {
+		threshold = DefaultCooldownFailAfterConsecutive
+	}
+
+	duration := cc.Duration
+	if duration == 0 {
+		duration = DefaultCooldownDuration
 	}
 
 	return effectiveCooldown{
-		enabled:               true,
-		failAfter:             failAfter,
-		duration:              dur,
-		countDeadlineExceeded: cc.CountDeadlineExceeded,
+		enabled:   true,
+		threshold: threshold,
+		duration:  duration,
 	}, nil
 }
 
-func resolveRetryableStatusCodes(additional []int) (map[int]struct{}, error) {
+func resolveTriggerStatusCodes(additional []int) (map[int]struct{}, error) {
+	// Preserve the existing runtime trigger set in this issue. Final v1 trigger
+	// semantics, including 429, are owned by a later issue.
 	statuses := map[int]struct{}{
 		429: {},
 		502: {},
@@ -241,7 +258,7 @@ func resolveRetryableStatusCodes(additional []int) (map[int]struct{}, error) {
 
 	for i, code := range additional {
 		if !validHTTPStatusCode(code) {
-			return nil, fmt.Errorf("rcpx: invalid AdditionalRetryableStatusCodes[%d] %d", i, code)
+			return nil, fmt.Errorf("rcpx: invalid AdditionalTriggerStatusCodes[%d] %d", i, code)
 		}
 		statuses[code] = struct{}{}
 	}

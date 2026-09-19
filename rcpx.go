@@ -10,14 +10,11 @@
 // not supported.
 package rcpx
 
-import (
-	"net/http"
-	"time"
-)
+import "time"
 
 const (
 	// DefaultCooldownFailAfterConsecutive is the default threshold of consecutive
-	// failover-causing failures required to cool down an upstream.
+	// failover-causing failures required to cool down an endpoint.
 	DefaultCooldownFailAfterConsecutive = 3
 
 	// DefaultCooldownDuration is the default cooldown duration.
@@ -30,9 +27,8 @@ const (
 	DefaultBodyBufferBytes = 1 << 20 // 1 MiB
 )
 
-// NewRoundTripper returns an http.RoundTripper that performs sequential failover
-// across cfg.Upstreams per request.
-func NewRoundTripper(cfg Config) (http.RoundTripper, error) {
+// New validates cfg and returns a reusable Transport.
+func New(cfg Config) (*Transport, error) {
 	rcfg, err := resolveConfig(cfg)
 	if err != nil {
 		return nil, err

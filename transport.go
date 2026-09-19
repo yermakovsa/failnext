@@ -2,7 +2,6 @@ package rcpx
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +10,7 @@ import (
 	"time"
 )
 
-type transport struct {
+type Transport struct {
 	cfg      resolvedConfig
 	cooldown *cooldownTracker
 
@@ -19,11 +18,23 @@ type transport struct {
 	now func() time.Time
 }
 
-func newTransport(cfg resolvedConfig) *transport {
-	return &transport{
+func newTransport(cfg resolvedConfig) *Transport {
+	return &Transport{
 		cfg:      cfg,
-		cooldown: newCooldownTracker(len(cfg.upstreams), cfg.cooldown),
+		cooldown: newCooldownTracker(len(cfg.endpoints), cfg.cooldown),
 		now:      time.Now,
+	}
+}
+
+// CloseIdleConnections closes idle connections on the configured base transport
+// when it supports that operation.
+func (t *Transport) CloseIdleConnections() {
+	if t == nil {
+		return
+	}
+
+	if closer, ok := t.cfg.base.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
 	}
 }
 
@@ -78,9 +89,9 @@ func normalizeBaseRoundTrip(resp *http.Response, err error, upstream string) (*h
 	return resp, err
 }
 
-func (t *transport) eligibleUpstreams(now time.Time) (eligible []int, skippedCooldown int) {
-	eligible = make([]int, 0, len(t.cfg.upstreams))
-	for i := range t.cfg.upstreams {
+func (t *Transport) eligibleEndpoints(now time.Time) (eligible []int, skippedCooldown int) {
+	eligible = make([]int, 0, len(t.cfg.endpoints))
+	for i := range t.cfg.endpoints {
 		if t.cooldown == nil || t.cooldown.eligible(now, i) {
 			eligible = append(eligible, i)
 			continue
@@ -90,7 +101,7 @@ func (t *transport) eligibleUpstreams(now time.Time) (eligible []int, skippedCoo
 	return eligible, skippedCooldown
 }
 
-func (t *transport) notifyAttempt(attempt int, upstream, method string, batch bool, statusCode int, err error, final bool) {
+func (t *Transport) notifyAttempt(attempt int, upstream, method string, batch bool, statusCode int, err error, final bool) {
 	if t.cfg.onAttempt == nil {
 		return
 	}
@@ -106,7 +117,7 @@ func (t *transport) notifyAttempt(attempt int, upstream, method string, batch bo
 	})
 }
 
-func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req == nil {
 		return nil, errors.New("rcpx: nil request")
 	}
@@ -128,7 +139,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	now := t.now()
-	eligible, skippedCooldown := t.eligibleUpstreams(now)
+	eligible, skippedCooldown := t.eligibleEndpoints(now)
 	if len(eligible) == 0 {
 		return nil, &AllUpstreamsFailedError{
 			Attempted:       0,
@@ -142,12 +153,12 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	for pos, idx := range eligible {
 		attemptNo++
-		up := t.cfg.upstreams[idx]
+		endpoint := t.cfg.endpoints[idx]
 
-		areq := cloneRequestForUpstream(req, up.url, body)
+		areq := cloneRequestForEndpoint(req, endpoint.url, body)
 
 		resp, rerr := t.cfg.base.RoundTrip(areq)
-		resp, rerr = normalizeBaseRoundTrip(resp, rerr, up.raw)
+		resp, rerr = normalizeBaseRoundTrip(resp, rerr, endpoint.raw)
 
 		// Cancellation rail: return immediately; policy is not called.
 		if isCanceledOrDeadline(ctx, rerr) || ctx.Err() != nil {
@@ -155,14 +166,8 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			if ctx.Err() != nil {
 				finalErr = ctx.Err()
 			}
-			if t.cooldown != nil &&
-				t.cfg.cooldown.countDeadlineExceeded &&
-				errors.Is(finalErr, context.DeadlineExceeded) &&
-				!errors.Is(finalErr, context.Canceled) {
-				t.cooldown.recordFailoverFailure(now, idx)
-			}
 			closeResponseBody(resp)
-			t.notifyAttempt(attemptNo, up.raw, method, batch, 0, finalErr, true)
+			t.notifyAttempt(attemptNo, endpoint.raw, method, batch, 0, finalErr, true)
 
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
@@ -179,7 +184,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// Non-retryable HTTP statuses are treated as "success" from rcpx's
 		// perspective and returned unchanged.
 		if t.cfg.isAttemptSuccess(status, rerr) {
-			t.notifyAttempt(attemptNo, up.raw, method, batch, status, nil, true)
+			t.notifyAttempt(attemptNo, endpoint.raw, method, batch, status, nil, true)
 			if t.cooldown != nil {
 				t.cooldown.recordSuccess(idx)
 			}
@@ -189,10 +194,10 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// Non-success: choose a cause error.
 		cause := rerr
 		if cause == nil {
-			cause = &httpStatusError{code: status, upstream: up.raw}
+			cause = &httpStatusError{code: status, upstream: endpoint.raw}
 		}
 
-		out := t.cfg.buildAttemptOutcome(attemptNo, up.raw, method, batch, status, rerr)
+		out := t.cfg.buildAttemptOutcome(attemptNo, endpoint.raw, method, batch, status, rerr)
 
 		hasNext := pos < len(eligible)-1
 		continueToNext := false
@@ -204,7 +209,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// Idempotency rail: non-idempotent requests never fail over unless allowed.
 		if nonIdempotent && !t.cfg.allowNI && continueToNext {
 			closeResponseBody(resp)
-			t.notifyAttempt(attemptNo, up.raw, method, batch, status, cause, true)
+			t.notifyAttempt(attemptNo, endpoint.raw, method, batch, status, cause, true)
 			return nil, &NonIdempotentBlockedError{
 				Outcome: out,
 				Cause:   cause,
@@ -213,13 +218,13 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		if continueToNext {
 			closeResponseBody(resp)
-			t.notifyAttempt(attemptNo, up.raw, method, batch, status, cause, false)
+			t.notifyAttempt(attemptNo, endpoint.raw, method, batch, status, cause, false)
 
 			if t.cooldown != nil {
 				t.cooldown.recordFailoverFailure(now, idx)
 			}
 			failures = append(failures, AttemptFailure{
-				Upstream:   up.raw,
+				Upstream:   endpoint.raw,
 				Method:     method,
 				Batch:      batch,
 				StatusCode: status,
@@ -231,10 +236,10 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		closeResponseBody(resp)
 
-		t.notifyAttempt(attemptNo, up.raw, method, batch, status, cause, true)
+		t.notifyAttempt(attemptNo, endpoint.raw, method, batch, status, cause, true)
 
 		failures = append(failures, AttemptFailure{
-			Upstream:   up.raw,
+			Upstream:   endpoint.raw,
 			Method:     method,
 			Batch:      batch,
 			StatusCode: status,
@@ -278,22 +283,21 @@ func bufferRequestBody(req *http.Request, capBytes int) ([]byte, error) {
 	return b, nil
 }
 
-// cloneRequestForUpstream clones orig and targets the provided upstream URL.
+// cloneRequestForEndpoint clones orig and targets the provided endpoint URL.
 //
 // If orig.Body is nil and bodyBytes is empty, the clone preserves a nil Body (and
 // nil GetBody).
 //
-// NOTE: upstream must be a full target URL; there is no path joining.
-func cloneRequestForUpstream(orig *http.Request, upstream *url.URL, bodyBytes []byte) *http.Request {
+// NOTE: endpoint must be a full target URL; there is no path joining.
+func cloneRequestForEndpoint(orig *http.Request, endpoint *url.URL, bodyBytes []byte) *http.Request {
 	r := orig.Clone(orig.Context())
 
-	if upstream != nil {
-		u := *upstream
+	if endpoint != nil {
+		u := *endpoint
 		r.URL = &u
 	}
 
 	r.RequestURI = ""
-	r.Host = ""
 
 	if orig.Body == nil && len(bodyBytes) == 0 {
 		r.Body = nil

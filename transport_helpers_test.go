@@ -130,17 +130,23 @@ func httpResp(code int, body string) *http.Response { return newHTTPResp(code, b
 
 // Transport constructor
 
-func mustNewTransport(t *testing.T, cfg Config) *transport {
+func testEndpoints(urls ...string) []Endpoint {
+	endpoints := make([]Endpoint, len(urls))
+	for i, url := range urls {
+		endpoints[i] = Endpoint{
+			ID:  EndpointID(fmt.Sprintf("endpoint-%d", i+1)),
+			URL: url,
+		}
+	}
+	return endpoints
+}
+
+func mustNewTransport(t *testing.T, cfg Config) *Transport {
 	t.Helper()
 
-	rt, err := NewRoundTripper(cfg)
+	tr, err := New(cfg)
 	if err != nil {
-		t.Fatalf("NewRoundTripper error: %v", err)
-	}
-
-	tr, ok := rt.(*transport)
-	if !ok {
-		t.Fatalf("expected *transport, got %T", rt)
+		t.Fatalf("New error: %v", err)
 	}
 
 	// Keep time deterministic for any internal cooldown bookkeeping.

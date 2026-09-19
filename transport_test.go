@@ -26,7 +26,7 @@ func TestRoundTrip_HTTP500_IsTreatedAsSuccess_NoFailover(t *testing.T) {
 	}
 
 	rt := mustNewTransport(t, Config{
-		Upstreams: []string{u1, u2},
+		Endpoints: testEndpoints(u1, u2),
 		Base:      base,
 	})
 
@@ -47,7 +47,7 @@ func TestRoundTrip_HTTP500_IsTreatedAsSuccess_NoFailover(t *testing.T) {
 	assertCalls(t, base, u1)
 }
 
-func TestRoundTrip_AdditionalRetryableStatus_FailsOver(t *testing.T) {
+func TestRoundTrip_AdditionalTriggerStatus_FailsOver(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 	u2 := "https://u2.test/rpc"
 
@@ -64,9 +64,9 @@ func TestRoundTrip_AdditionalRetryableStatus_FailsOver(t *testing.T) {
 	}
 
 	rt := mustNewTransport(t, Config{
-		Upstreams:                      []string{u1, u2},
-		Base:                           base,
-		AdditionalRetryableStatusCodes: []int{500},
+		Endpoints:                    testEndpoints(u1, u2),
+		Base:                         base,
+		AdditionalTriggerStatusCodes: []int{500},
 	})
 
 	req := newRPCRequest(t, u1, "eth_blockNumber")
@@ -78,7 +78,7 @@ func TestRoundTrip_AdditionalRetryableStatus_FailsOver(t *testing.T) {
 	assertCalls(t, base, u1, u2)
 }
 
-func TestRoundTrip_AdditionalRetryableStatus_DoesNotReplaceDefaults(t *testing.T) {
+func TestRoundTrip_AdditionalTriggerStatus_DoesNotReplaceDefaults(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 	u2 := "https://u2.test/rpc"
 
@@ -95,9 +95,9 @@ func TestRoundTrip_AdditionalRetryableStatus_DoesNotReplaceDefaults(t *testing.T
 	}
 
 	rt := mustNewTransport(t, Config{
-		Upstreams:                      []string{u1, u2},
-		Base:                           base,
-		AdditionalRetryableStatusCodes: []int{500},
+		Endpoints:                    testEndpoints(u1, u2),
+		Base:                         base,
+		AdditionalTriggerStatusCodes: []int{500},
 	})
 
 	req := newRPCRequest(t, u1, "eth_blockNumber")
@@ -123,9 +123,9 @@ func TestRoundTrip_NonConfiguredStatus_IsTreatedAsSuccess_NoFailover(t *testing.
 	}
 
 	rt := mustNewTransport(t, Config{
-		Upstreams:                      []string{u1, u2},
-		Base:                           base,
-		AdditionalRetryableStatusCodes: []int{500},
+		Endpoints:                    testEndpoints(u1, u2),
+		Base:                         base,
+		AdditionalTriggerStatusCodes: []int{500},
 	})
 
 	req := newRPCRequest(t, u1, "eth_blockNumber")
@@ -161,7 +161,7 @@ func TestRoundTrip_HTTP200_WithJSONRPCErrorPayload_IsTreatedAsSuccess_NoFailover
 	}
 
 	rt := mustNewTransport(t, Config{
-		Upstreams: []string{u1, u2},
+		Endpoints: testEndpoints(u1, u2),
 		Base:      base,
 	})
 
@@ -192,7 +192,7 @@ func TestRoundTrip_NormalizesNilNilAsErrorAndFailsOver(t *testing.T) {
 	}
 
 	rt := mustNewTransport(t, Config{
-		Upstreams: []string{u1, u2},
+		Endpoints: testEndpoints(u1, u2),
 		Base:      base,
 	})
 
@@ -219,7 +219,7 @@ func TestRoundTrip_FailoverOnTransportErrorEOF(t *testing.T) {
 	}
 
 	rt := mustNewTransport(t, Config{
-		Upstreams: []string{u1, u2},
+		Endpoints: testEndpoints(u1, u2),
 		Base:      base,
 	})
 
@@ -260,7 +260,7 @@ func TestRoundTrip_FailoverOnRetryableHTTPStatus_ClosesBody(t *testing.T) {
 			}
 
 			rt := mustNewTransport(t, Config{
-				Upstreams: []string{u1, u2},
+				Endpoints: testEndpoints(u1, u2),
 				Base:      base,
 			})
 
@@ -299,7 +299,7 @@ func TestRoundTrip_ClosesBodyWhenRespAndErrReturnedThenFailsOver(t *testing.T) {
 	}
 
 	rt := mustNewTransport(t, Config{
-		Upstreams: []string{u1, u2},
+		Endpoints: testEndpoints(u1, u2),
 		Base:      base,
 	})
 
@@ -332,7 +332,7 @@ func TestRoundTrip_PolicyNotCalledOnSuccess(t *testing.T) {
 	pol, policy := newPolicyRecorder(true)
 
 	rt := mustNewTransport(t, Config{
-		Upstreams:   []string{u1, u2},
+		Endpoints:   testEndpoints(u1, u2),
 		Base:        base,
 		RetryPolicy: policy,
 	})
@@ -370,7 +370,7 @@ func TestRoundTrip_PolicyCalledWhenConsideringContinuing(t *testing.T) {
 	pol, policy := newPolicyRecorder(true) // allow failover
 
 	rt := mustNewTransport(t, Config{
-		Upstreams:   []string{u1, u2},
+		Endpoints:   testEndpoints(u1, u2),
 		Base:        base,
 		RetryPolicy: policy,
 	})
@@ -413,7 +413,7 @@ func TestRoundTrip_PolicyNotCalledOnLastEligibleAttempt(t *testing.T) {
 	pol, policy := newPolicyRecorder(true)
 
 	tr := mustNewTransport(t, Config{
-		Upstreams:   []string{u1, u2},
+		Endpoints:   testEndpoints(u1, u2),
 		Base:        base,
 		RetryPolicy: policy,
 	})
@@ -474,7 +474,7 @@ func TestRoundTrip_PolicyCanStopFailoverOnRetryableStatus(t *testing.T) {
 	pol, policy := newPolicyRecorder(false) // stop failover
 
 	rt := mustNewTransport(t, Config{
-		Upstreams:   []string{u1, u2},
+		Endpoints:   testEndpoints(u1, u2),
 		Base:        base,
 		RetryPolicy: policy,
 	})
@@ -509,7 +509,7 @@ func TestRoundTrip_OnAttempt_SuccessFirstAttempt(t *testing.T) {
 
 	var attempts []AttemptInfo
 	rt := mustNewTransport(t, Config{
-		Upstreams: []string{u1},
+		Endpoints: testEndpoints(u1),
 		Base:      base,
 		OnAttempt: func(info AttemptInfo) {
 			attempts = append(attempts, info)
@@ -564,7 +564,7 @@ func TestRoundTrip_OnAttempt_Failover(t *testing.T) {
 
 	var attempts []AttemptInfo
 	rt := mustNewTransport(t, Config{
-		Upstreams: []string{u1, u2},
+		Endpoints: testEndpoints(u1, u2),
 		Base:      base,
 		OnAttempt: func(info AttemptInfo) {
 			attempts = append(attempts, info)
@@ -646,7 +646,7 @@ func TestRoundTrip_OnAttempt_PolicyStopsFailover(t *testing.T) {
 	var attempts []AttemptInfo
 	pol, policy := newPolicyRecorder(false)
 	rt := mustNewTransport(t, Config{
-		Upstreams:   []string{u1, u2},
+		Endpoints:   testEndpoints(u1, u2),
 		Base:        base,
 		RetryPolicy: policy,
 		OnAttempt: func(info AttemptInfo) {
@@ -706,7 +706,7 @@ func TestRoundTrip_OnAttempt_NonIdempotentBlocked(t *testing.T) {
 
 	var attempts []AttemptInfo
 	rt := mustNewTransport(t, Config{
-		Upstreams: []string{u1, u2},
+		Endpoints: testEndpoints(u1, u2),
 		Base:      base,
 		OnAttempt: func(info AttemptInfo) {
 			attempts = append(attempts, info)
@@ -783,7 +783,7 @@ func TestRoundTrip_NonIdempotentBlockedByDefault(t *testing.T) {
 			}
 
 			rt := mustNewTransport(t, Config{
-				Upstreams: []string{u1, u2},
+				Endpoints: testEndpoints(u1, u2),
 				Base:      base,
 				// AllowNonIdempotent defaults to false.
 			})
@@ -812,7 +812,7 @@ func TestRoundTrip_NonIdempotentAllowed_FailoverSucceeds(t *testing.T) {
 	}
 
 	rt := mustNewTransport(t, Config{
-		Upstreams:          []string{u1, u2},
+		Endpoints:          testEndpoints(u1, u2),
 		Base:               base,
 		AllowNonIdempotent: true,
 	})
@@ -840,7 +840,7 @@ func TestRoundTrip_AdditionalNonIdempotentMethod_BlockedByDefault(t *testing.T) 
 	}
 
 	rt := mustNewTransport(t, Config{
-		Upstreams:                      []string{u1, u2},
+		Endpoints:                      testEndpoints(u1, u2),
 		Base:                           base,
 		AdditionalNonIdempotentMethods: []string{"custom_send"},
 	})
@@ -877,7 +877,7 @@ func TestRoundTrip_AdditionalNonIdempotentMethod_AllowNonIdempotentFailsOver(t *
 	}
 
 	rt := mustNewTransport(t, Config{
-		Upstreams:                      []string{u1, u2},
+		Endpoints:                      testEndpoints(u1, u2),
 		Base:                           base,
 		AllowNonIdempotent:             true,
 		AdditionalNonIdempotentMethods: []string{"custom_send"},
@@ -906,7 +906,7 @@ func TestRoundTrip_BatchWithAdditionalNonIdempotentMethod_BlockedByDefault(t *te
 	}
 
 	rt := mustNewTransport(t, Config{
-		Upstreams:                      []string{u1, u2},
+		Endpoints:                      testEndpoints(u1, u2),
 		Base:                           base,
 		AdditionalNonIdempotentMethods: []string{"custom_send"},
 	})
@@ -946,7 +946,7 @@ func TestRoundTrip_ContextDoneBeforeCall_BaseNotCalled(t *testing.T) {
 		}
 
 		rt := mustNewTransport(t, Config{
-			Upstreams: []string{u1},
+			Endpoints: testEndpoints(u1),
 			Base:      base,
 		})
 
@@ -973,7 +973,7 @@ func TestRoundTrip_ContextDoneBeforeCall_BaseNotCalled(t *testing.T) {
 		}
 
 		rt := mustNewTransport(t, Config{
-			Upstreams: []string{u1},
+			Endpoints: testEndpoints(u1),
 			Base:      base,
 		})
 
@@ -1012,7 +1012,7 @@ func TestRoundTrip_CanceledByBase_ReturnsImmediately(t *testing.T) {
 	pol, policy := newPolicyRecorder(true)
 
 	rt := mustNewTransport(t, Config{
-		Upstreams:   []string{u1, u2},
+		Endpoints:   testEndpoints(u1, u2),
 		Base:        base,
 		RetryPolicy: policy,
 	})
@@ -1053,7 +1053,7 @@ func TestRoundTrip_CanceledByBaseWithResponse_ClosesBodyAndReturnsImmediately(t 
 	pol, policy := newPolicyRecorder(true)
 
 	rt := mustNewTransport(t, Config{
-		Upstreams:   []string{u1, u2},
+		Endpoints:   testEndpoints(u1, u2),
 		Base:        base,
 		RetryPolicy: policy,
 	})
@@ -1075,51 +1075,6 @@ func TestRoundTrip_CanceledByBaseWithResponse_ClosesBodyAndReturnsImmediately(t 
 	assertCalls(t, base, u1)
 }
 
-func TestRoundTrip_DeadlineExceededCountsForCooldownWhenEnabled(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {
-				{resp: nil, err: context.DeadlineExceeded},
-			},
-			u2: {
-				{resp: httpResp(200, "ok"), err: nil},
-			},
-		},
-	}
-
-	tr := mustNewTransport(t, Config{
-		Upstreams: []string{u1, u2},
-		Base:      base,
-		Cooldown: &CooldownConfig{
-			FailAfterConsecutive:  1,
-			Duration:              time.Hour,
-			CountDeadlineExceeded: true,
-		},
-	})
-	fixedNow := time.Unix(400, 0)
-	tr.now = func() time.Time { return fixedNow }
-
-	req1 := newRPCRequest(t, u1, "eth_blockNumber")
-	resp, err := tr.RoundTrip(req1)
-	if resp != nil {
-		t.Fatalf("expected nil response, got %#v", resp)
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
-	}
-
-	// The expired request returns immediately. The next request skips u1 because
-	// the deadline counted toward cooldown.
-	req2 := newRPCRequest(t, u1, "eth_blockNumber")
-	resp = mustRoundTrip(t, tr, req2)
-	assertStatus(t, resp, 200)
-
-	assertCalls(t, base, u1, u2)
-}
-
 func TestRoundTrip_DeadlineExceededDoesNotCountForCooldownByDefault(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 	u2 := "https://u2.test/rpc"
@@ -1137,11 +1092,11 @@ func TestRoundTrip_DeadlineExceededDoesNotCountForCooldownByDefault(t *testing.T
 	}
 
 	tr := mustNewTransport(t, Config{
-		Upstreams: []string{u1, u2},
+		Endpoints: testEndpoints(u1, u2),
 		Base:      base,
-		Cooldown: &CooldownConfig{
-			FailAfterConsecutive: 1,
-			Duration:             time.Hour,
+		Cooldown: CooldownConfig{
+			Threshold: 1,
+			Duration:  time.Hour,
 		},
 	})
 	fixedNow := time.Unix(500, 0)
@@ -1154,50 +1109,6 @@ func TestRoundTrip_DeadlineExceededDoesNotCountForCooldownByDefault(t *testing.T
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
-	}
-
-	req2 := newRPCRequest(t, u1, "eth_blockNumber")
-	resp = mustRoundTrip(t, tr, req2)
-	assertStatus(t, resp, 200)
-
-	assertCalls(t, base, u1, u1)
-}
-
-func TestRoundTrip_CanceledDoesNotCountForCooldownWhenDeadlineCountingEnabled(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {
-				{resp: nil, err: context.Canceled},
-				{resp: httpResp(200, "ok"), err: nil},
-			},
-			u2: {
-				{resp: httpResp(200, "unexpected"), err: nil},
-			},
-		},
-	}
-
-	tr := mustNewTransport(t, Config{
-		Upstreams: []string{u1, u2},
-		Base:      base,
-		Cooldown: &CooldownConfig{
-			FailAfterConsecutive:  1,
-			Duration:              time.Hour,
-			CountDeadlineExceeded: true,
-		},
-	})
-	fixedNow := time.Unix(600, 0)
-	tr.now = func() time.Time { return fixedNow }
-
-	req1 := newRPCRequest(t, u1, "eth_blockNumber")
-	resp, err := tr.RoundTrip(req1)
-	if resp != nil {
-		t.Fatalf("expected nil response, got %#v", resp)
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 
 	req2 := newRPCRequest(t, u1, "eth_blockNumber")
@@ -1231,11 +1142,11 @@ func TestCooldown_TripsAfterNConsecutiveFailoverFailures_SkipsCooledUpstream(t *
 	}
 
 	tr := mustNewTransport(t, Config{
-		Upstreams: []string{u1, u2},
+		Endpoints: testEndpoints(u1, u2),
 		Base:      base,
-		Cooldown: &CooldownConfig{
-			FailAfterConsecutive: 2,
-			Duration:             time.Minute,
+		Cooldown: CooldownConfig{
+			Threshold: 2,
+			Duration:  time.Minute,
 		},
 	})
 	fixedNow := time.Unix(100, 0)
@@ -1278,11 +1189,11 @@ func TestCooldown_ResetsOnSuccess(t *testing.T) {
 	}
 
 	tr := mustNewTransport(t, Config{
-		Upstreams: []string{u1, u2},
+		Endpoints: testEndpoints(u1, u2),
 		Base:      base,
-		Cooldown: &CooldownConfig{
-			FailAfterConsecutive: 2,
-			Duration:             time.Minute,
+		Cooldown: CooldownConfig{
+			Threshold: 2,
+			Duration:  time.Minute,
 		},
 	})
 	fixedNow := time.Unix(200, 0)
@@ -1307,11 +1218,11 @@ func TestCooldown_NoEligibleUpstreams_ReturnsAggregateError_UnwrapsSentinel(t *t
 	base := &scriptRT{results: map[string][]rtResult{}}
 
 	tr := mustNewTransport(t, Config{
-		Upstreams: []string{u1, u2},
+		Endpoints: testEndpoints(u1, u2),
 		Base:      base,
-		Cooldown: &CooldownConfig{
-			FailAfterConsecutive: 1,
-			Duration:             time.Hour,
+		Cooldown: CooldownConfig{
+			Threshold: 1,
+			Duration:  time.Hour,
 		},
 	})
 	fixedNow := time.Unix(300, 0)
@@ -1358,11 +1269,12 @@ func TestRoundTrip_DoesNotMutateOriginalRequestURLOrHost(t *testing.T) {
 	}
 
 	tr := mustNewTransport(t, Config{
-		Upstreams: []string{u1, u2},
+		Endpoints: testEndpoints(u1, u2),
 		Base:      base,
 	})
 
 	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req.Host = "signed.example"
 	origURL := req.URL.String()
 	origHost := req.Host
 	origRequestURI := req.RequestURI
@@ -1388,22 +1300,53 @@ func TestRoundTrip_DoesNotMutateOriginalRequestURLOrHost(t *testing.T) {
 	assertCalls(t, base, u1)
 }
 
-func TestRoundTrip_OutboundRequestHostBehavior(t *testing.T) {
-	u1 := "https://u1.test/rpc"
+func TestRoundTrip_UsesConfiguredEndpointOrder(t *testing.T) {
+	firstURL := "https://z-priority.test/rpc"
+	secondURL := "https://a-priority.test/rpc"
+
+	base := &scriptRT{
+		results: map[string][]rtResult{
+			firstURL:  {{resp: nil, err: io.EOF}},
+			secondURL: {{resp: httpResp(200, "ok"), err: nil}},
+		},
+	}
+
+	tr := mustNewTransport(t, Config{
+		Endpoints: []Endpoint{
+			{ID: "z-id", URL: firstURL},
+			{ID: "a-id", URL: secondURL},
+		},
+		Base: base,
+	})
+
+	req := newRPCRequest(t, secondURL, "eth_blockNumber")
+	resp := mustRoundTrip(t, tr, req)
+	assertStatus(t, resp, 200)
+	assertCalls(t, base, firstURL, secondURL)
+}
+
+func TestRoundTrip_UsesCompleteEndpointDestinationAndPreservesHost(t *testing.T) {
+	endpointURL := "https://endpoint.test/fixed/rpc?key=abc"
+	originalURL := "https://original.test/original/path?old=1"
 
 	inspector := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL == nil {
-			t.Fatalf("outbound req.URL is nil")
+			t.Fatal("outbound req.URL is nil")
 		}
-		if req.URL.Scheme != "https" {
-			t.Fatalf("expected scheme https, got %q", req.URL.Scheme)
+		if got := req.URL.Scheme; got != "https" {
+			t.Fatalf("expected scheme https, got %q", got)
 		}
-		if req.URL.Host != "u1.test" {
-			t.Fatalf("expected URL host u1.test, got %q", req.URL.Host)
+		if got := req.URL.Host; got != "endpoint.test" {
+			t.Fatalf("expected URL host endpoint.test, got %q", got)
 		}
-		// rcpx clears Host so net/http derives Host from URL.
-		if req.Host != "" {
-			t.Fatalf("expected req.Host cleared, got %q", req.Host)
+		if got := req.URL.Path; got != "/fixed/rpc" {
+			t.Fatalf("expected endpoint path /fixed/rpc, got %q", got)
+		}
+		if got := req.URL.RawQuery; got != "key=abc" {
+			t.Fatalf("expected endpoint query key=abc, got %q", got)
+		}
+		if got := req.Host; got != "signed.example" {
+			t.Fatalf("expected caller Host preserved, got %q", got)
 		}
 		if req.RequestURI != "" {
 			t.Fatalf("expected RequestURI cleared on client request, got %q", req.RequestURI)
@@ -1417,11 +1360,12 @@ func TestRoundTrip_OutboundRequestHostBehavior(t *testing.T) {
 	})
 
 	tr := mustNewTransport(t, Config{
-		Upstreams: []string{u1},
+		Endpoints: []Endpoint{{ID: "primary", URL: endpointURL}},
 		Base:      inspector,
 	})
 
-	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req := newRPCRequest(t, originalURL, "eth_blockNumber")
+	req.Host = "signed.example"
 	resp, err := tr.RoundTrip(req)
 	if err != nil {
 		t.Fatalf("RoundTrip error: %v", err)
@@ -1448,7 +1392,7 @@ func TestRoundTrip_AllUpstreamsFailedError_CollectsFailuresAndUnwrapsCause(t *te
 	}
 
 	tr := mustNewTransport(t, Config{
-		Upstreams: []string{u1, u2},
+		Endpoints: testEndpoints(u1, u2),
 		Base:      base,
 	})
 
@@ -1536,7 +1480,7 @@ func TestRoundTrip_BodyBufferedOnce_ReplayedAcrossAttempts(t *testing.T) {
 	})
 
 	rt := mustNewTransport(t, Config{
-		Upstreams: []string{u1, u2},
+		Endpoints: testEndpoints(u1, u2),
 		Base:      dispatch,
 	})
 
@@ -1579,7 +1523,7 @@ func TestRoundTrip_PreservesNilBodyWhenOriginalBodyNilAndEmpty(t *testing.T) {
 	})
 
 	rt := mustNewTransport(t, Config{
-		Upstreams: []string{u1},
+		Endpoints: testEndpoints(u1),
 		Base:      inspector,
 	})
 
@@ -1607,7 +1551,7 @@ func TestRoundTrip_BodyTooLarge_ReturnsErrBodyTooLarge_BaseNotCalled(t *testing.
 	base := &scriptRT{results: map[string][]rtResult{}}
 
 	rt := mustNewTransport(t, Config{
-		Upstreams:       []string{u1},
+		Endpoints:       testEndpoints(u1),
 		Base:            base,
 		BodyBufferBytes: 8, // tiny cap
 	})
@@ -1631,7 +1575,7 @@ func TestRoundTrip_BodyUnreadable_ReturnsErrBodyUnreadable_BaseNotCalled(t *test
 	base := &scriptRT{results: map[string][]rtResult{}}
 
 	rt := mustNewTransport(t, Config{
-		Upstreams: []string{u1},
+		Endpoints: testEndpoints(u1),
 		Base:      base,
 	})
 
@@ -1649,4 +1593,53 @@ func TestRoundTrip_BodyUnreadable_ReturnsErrBodyUnreadable_BaseNotCalled(t *test
 	}
 
 	assertCalls(t, base)
+}
+
+type closeIdleTrackingRT struct {
+	closeCalls     int
+	roundTripCalls int
+}
+
+func (r *closeIdleTrackingRT) RoundTrip(*http.Request) (*http.Response, error) {
+	r.roundTripCalls++
+	return nil, errors.New("unexpected RoundTrip")
+}
+
+func (r *closeIdleTrackingRT) CloseIdleConnections() {
+	r.closeCalls++
+}
+
+func TestTransport_CloseIdleConnections_ForwardsWhenSupported(t *testing.T) {
+	base := &closeIdleTrackingRT{}
+	tr := mustNewTransport(t, Config{
+		Endpoints: testEndpoints("https://u1.test/rpc"),
+		Base:      base,
+	})
+
+	tr.CloseIdleConnections()
+
+	if base.closeCalls != 1 {
+		t.Fatalf("expected CloseIdleConnections calls=1, got %d", base.closeCalls)
+	}
+	if base.roundTripCalls != 0 {
+		t.Fatalf("expected RoundTrip calls=0, got %d", base.roundTripCalls)
+	}
+}
+
+func TestTransport_CloseIdleConnections_NoOpWhenUnsupported(t *testing.T) {
+	roundTripCalls := 0
+	base := roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		roundTripCalls++
+		return nil, errors.New("unexpected RoundTrip")
+	})
+	tr := mustNewTransport(t, Config{
+		Endpoints: testEndpoints("https://u1.test/rpc"),
+		Base:      base,
+	})
+
+	tr.CloseIdleConnections()
+
+	if roundTripCalls != 0 {
+		t.Fatalf("expected RoundTrip calls=0, got %d", roundTripCalls)
+	}
 }
