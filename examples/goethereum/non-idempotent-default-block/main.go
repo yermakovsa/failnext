@@ -16,14 +16,14 @@ import (
 func main() {
 	timeout := 5 * time.Second
 
-	// Deterministic demo: both upstreams are closed local ports.
-	upstreams := []string{
-		"http://127.0.0.1:65534",
-		"http://127.0.0.1:65533",
+	// Deterministic demo: both endpoints are closed local ports.
+	endpoints := []rcpx.Endpoint{
+		{ID: "primary", URL: "http://127.0.0.1:65534"},
+		{ID: "backup", URL: "http://127.0.0.1:65533"},
 	}
 
-	rt, err := rcpx.NewRoundTripper(rcpx.Config{
-		Upstreams: upstreams,
+	rt, err := rcpx.New(rcpx.Config{
+		Endpoints: endpoints,
 		Base:      http.DefaultTransport,
 		// AllowNonIdempotent defaults to false (safety): no retry/failover for write methods.
 	})
@@ -40,7 +40,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	rpcClient, err := rpc.DialOptions(ctx, upstreams[0], rpc.WithHTTPClient(httpClient))
+	rpcClient, err := rpc.DialOptions(ctx, endpoints[0].URL, rpc.WithHTTPClient(httpClient))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dial rpc: %v\n", err)
 		os.Exit(1)

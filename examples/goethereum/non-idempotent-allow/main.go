@@ -18,13 +18,13 @@ func main() {
 
 	// AllowNonIdempotent=true lets rcpx fail over even for write methods.
 	// This can duplicate side effects. We use closed local ports so nothing is sent.
-	upstreams := []string{
-		"http://127.0.0.1:65534",
-		"http://127.0.0.1:65533",
+	endpoints := []rcpx.Endpoint{
+		{ID: "primary", URL: "http://127.0.0.1:65534"},
+		{ID: "backup", URL: "http://127.0.0.1:65533"},
 	}
 
-	rt, err := rcpx.NewRoundTripper(rcpx.Config{
-		Upstreams:          upstreams,
+	rt, err := rcpx.New(rcpx.Config{
+		Endpoints:          endpoints,
 		Base:               http.DefaultTransport,
 		AllowNonIdempotent: true, // explicit opt-in
 	})
@@ -41,7 +41,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	rpcClient, err := rpc.DialOptions(ctx, upstreams[0], rpc.WithHTTPClient(httpClient))
+	rpcClient, err := rpc.DialOptions(ctx, endpoints[0].URL, rpc.WithHTTPClient(httpClient))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dial rpc: %v\n", err)
 		os.Exit(1)

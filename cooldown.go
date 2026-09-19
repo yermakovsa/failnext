@@ -5,21 +5,21 @@ import (
 	"time"
 )
 
-// cooldownTracker tracks per-upstream cooldown state and is safe for concurrent use.
+// cooldownTracker tracks per-endpoint cooldown state and is safe for concurrent use.
 type cooldownTracker struct {
 	enabled   bool
-	failAfter int
+	threshold int
 	duration  time.Duration
 
 	mu        sync.Mutex
 	consec    []int       // consecutive failover-causing failures
-	coolingTo []time.Time // if now is before coolingTo[i], upstream i is cooling down
+	coolingTo []time.Time // if now is before coolingTo[i], endpoint i is cooling down
 }
 
 func newCooldownTracker(n int, cooldown effectiveCooldown) *cooldownTracker {
 	ct := &cooldownTracker{
 		enabled:   cooldown.enabled,
-		failAfter: cooldown.failAfter,
+		threshold: cooldown.threshold,
 		duration:  cooldown.duration,
 		consec:    make([]int, n),
 		coolingTo: make([]time.Time, n),
@@ -27,7 +27,7 @@ func newCooldownTracker(n int, cooldown effectiveCooldown) *cooldownTracker {
 
 	// If disabled, keep parameters inert.
 	if !ct.enabled {
-		ct.failAfter = 0
+		ct.threshold = 0
 		ct.duration = 0
 	}
 
@@ -68,9 +68,9 @@ func (c *cooldownTracker) recordSuccess(idx int) {
 	c.coolingTo[idx] = time.Time{}
 }
 
-// recordFailoverFailure records a failure for upstream idx that caused rcpx to
-// try another upstream. When consecutive failures reach the configured
-// threshold, the upstream cools down for the configured duration.
+// recordFailoverFailure records a failure for endpoint idx that caused rcpx to
+// try another endpoint. When consecutive failures reach the configured
+// threshold, the endpoint cools down for the configured duration.
 func (c *cooldownTracker) recordFailoverFailure(now time.Time, idx int) {
 	if c == nil || !c.enabled {
 		return
@@ -88,10 +88,10 @@ func (c *cooldownTracker) recordFailoverFailure(now time.Time, idx int) {
 	}
 
 	c.consec[idx]++
-	if c.failAfter <= 0 {
+	if c.threshold <= 0 {
 		return
 	}
-	if c.consec[idx] >= c.failAfter {
+	if c.consec[idx] >= c.threshold {
 		c.consec[idx] = 0
 		c.coolingTo[idx] = now.Add(c.duration)
 	}

@@ -6,9 +6,6 @@ import (
 )
 
 var (
-	// ErrNoUpstreams is returned when Config.Upstreams is empty.
-	ErrNoUpstreams = errors.New("rcpx: no upstreams")
-
 	// ErrNoEligibleUpstreams indicates that no upstreams were eligible to try
 	// (e.g., all cooling down).
 	ErrNoEligibleUpstreams = errors.New("rcpx: no eligible upstreams")

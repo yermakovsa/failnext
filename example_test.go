@@ -10,12 +10,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
-	"time"
 
 	"github.com/yermakovsa/rcpx"
 )
 
-func ExampleNewRoundTripper_failover() {
+func ExampleNew_failover() {
 	var hits1 atomic.Int32
 	var hits2 atomic.Int32
 
@@ -36,8 +35,11 @@ func ExampleNewRoundTripper_failover() {
 	}))
 	defer srv2.Close()
 
-	rt, err := rcpx.NewRoundTripper(rcpx.Config{
-		Upstreams: []string{srv1.URL, srv2.URL}, // priority order
+	rt, err := rcpx.New(rcpx.Config{
+		Endpoints: []rcpx.Endpoint{
+			{ID: "primary", URL: srv1.URL},
+			{ID: "backup", URL: srv2.URL},
+		}, // priority order
 	})
 	if err != nil {
 		panic(err)
@@ -84,8 +86,11 @@ func ExampleAllUpstreamsFailedError() {
 	}))
 	defer srv2.Close()
 
-	rt, err := rcpx.NewRoundTripper(rcpx.Config{
-		Upstreams: []string{srv1.URL, srv2.URL},
+	rt, err := rcpx.New(rcpx.Config{
+		Endpoints: []rcpx.Endpoint{
+			{ID: "primary", URL: srv1.URL},
+			{ID: "backup", URL: srv2.URL},
+		},
 	})
 	if err != nil {
 		panic(err)
@@ -110,7 +115,7 @@ func ExampleAllUpstreamsFailedError() {
 	// server1=1 server2=1
 }
 
-func ExampleNewRoundTripper_nonIdempotentBlocked() {
+func ExampleNew_nonIdempotentBlocked() {
 	var hits2 atomic.Int32
 	// Non-idempotent methods don't fail over unless AllowNonIdempotent is enabled.
 	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -126,8 +131,11 @@ func ExampleNewRoundTripper_nonIdempotentBlocked() {
 	}))
 	defer srv2.Close()
 
-	rt, err := rcpx.NewRoundTripper(rcpx.Config{
-		Upstreams: []string{srv1.URL, srv2.URL},
+	rt, err := rcpx.New(rcpx.Config{
+		Endpoints: []rcpx.Endpoint{
+			{ID: "primary", URL: srv1.URL},
+			{ID: "backup", URL: srv2.URL},
+		},
 	})
 	if err != nil {
 		panic(err)
@@ -149,7 +157,7 @@ func ExampleNewRoundTripper_nonIdempotentBlocked() {
 	// blocked=true server2=0
 }
 
-func ExampleNewRoundTripper_allowNonIdempotent() {
+func ExampleNew_allowNonIdempotent() {
 	var hits1 atomic.Int32
 	var hits2 atomic.Int32
 
@@ -168,8 +176,11 @@ func ExampleNewRoundTripper_allowNonIdempotent() {
 	}))
 	defer srv2.Close()
 
-	rt, err := rcpx.NewRoundTripper(rcpx.Config{
-		Upstreams:          []string{srv1.URL, srv2.URL},
+	rt, err := rcpx.New(rcpx.Config{
+		Endpoints: []rcpx.Endpoint{
+			{ID: "primary", URL: srv1.URL},
+			{ID: "backup", URL: srv2.URL},
+		},
 		AllowNonIdempotent: true, // opt-in
 	})
 	if err != nil {
@@ -198,7 +209,7 @@ func ExampleNewRoundTripper_allowNonIdempotent() {
 	// server1=1 server2=1 result=0xdeadbeef
 }
 
-func ExampleNewRoundTripper_cooldownDisabled() {
+func ExampleNew_cooldownDisabled() {
 	var hits1 atomic.Int32
 	var hits2 atomic.Int32
 
@@ -217,13 +228,12 @@ func ExampleNewRoundTripper_cooldownDisabled() {
 	}))
 	defer srv2.Close()
 
-	rt, err := rcpx.NewRoundTripper(rcpx.Config{
-		Upstreams: []string{srv1.URL, srv2.URL},
-		Cooldown: &rcpx.CooldownConfig{
-			Disabled:             true,
-			FailAfterConsecutive: 1,
-			Duration:             time.Hour,
+	rt, err := rcpx.New(rcpx.Config{
+		Endpoints: []rcpx.Endpoint{
+			{ID: "primary", URL: srv1.URL},
+			{ID: "backup", URL: srv2.URL},
 		},
+		Cooldown: rcpx.CooldownConfig{Disabled: true},
 	})
 	if err != nil {
 		panic(err)
@@ -254,7 +264,7 @@ func ExampleNewRoundTripper_cooldownDisabled() {
 	// server1=2 server2=2
 }
 
-func ExampleNewRoundTripper_customRetryPolicy() {
+func ExampleNew_customRetryPolicy() {
 	var hits1 atomic.Int32
 	var hits2 atomic.Int32
 	var policyCalls atomic.Int32
@@ -274,8 +284,11 @@ func ExampleNewRoundTripper_customRetryPolicy() {
 	}))
 	defer srv2.Close()
 
-	rt, err := rcpx.NewRoundTripper(rcpx.Config{
-		Upstreams: []string{srv1.URL, srv2.URL},
+	rt, err := rcpx.New(rcpx.Config{
+		Endpoints: []rcpx.Endpoint{
+			{ID: "primary", URL: srv1.URL},
+			{ID: "backup", URL: srv2.URL},
+		},
 		RetryPolicy: func(out rcpx.AttemptOutcome) bool {
 			policyCalls.Add(1)
 			return false // stop after the first failure
