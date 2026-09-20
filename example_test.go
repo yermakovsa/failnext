@@ -1,4 +1,3 @@
-// example_test.go
 package rcpx_test
 
 import (
@@ -48,7 +47,8 @@ func ExampleNew_failover() {
 	httpClient := &http.Client{Transport: rt}
 
 	// rcpx picks the upstream per attempt; the initial URL is just a placeholder.
-	req := jsonRPCRequest(context.Background(), srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
+	ctx := rcpx.WithFailoverAllowed(context.Background())
+	req := jsonRPCRequest(ctx, srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -98,7 +98,8 @@ func ExampleAllUpstreamsFailedError() {
 
 	httpClient := &http.Client{Transport: rt}
 
-	req := jsonRPCRequest(context.Background(), srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
+	ctx := rcpx.WithFailoverAllowed(context.Background())
+	req := jsonRPCRequest(ctx, srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
 	_, err = httpClient.Do(req)
 	if err == nil {
 		panic("expected error")
@@ -115,49 +116,7 @@ func ExampleAllUpstreamsFailedError() {
 	// server1=1 server2=1
 }
 
-func ExampleNew_nonIdempotentBlocked() {
-	var hits2 atomic.Int32
-	// Non-idempotent methods don't fail over unless AllowNonIdempotent is enabled.
-	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer srv1.Close()
-
-	// Would succeed, but should not be tried.
-	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits2.Add(1)
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0xdeadbeef"}`))
-	}))
-	defer srv2.Close()
-
-	rt, err := rcpx.New(rcpx.Config{
-		Endpoints: []rcpx.Endpoint{
-			{ID: "primary", URL: srv1.URL},
-			{ID: "backup", URL: srv2.URL},
-		},
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	httpClient := &http.Client{Transport: rt}
-
-	req := jsonRPCRequest(context.Background(), srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0xdeadbeef"]}`)
-
-	_, err = httpClient.Do(req)
-	if err == nil {
-		panic("expected error")
-	}
-
-	var blocked *rcpx.NonIdempotentBlockedError
-	ok := errors.As(err, &blocked) // deterministic type check; don't compare strings.
-	fmt.Printf("blocked=%t server2=%d\n", ok, hits2.Load())
-	// Output:
-	// blocked=true server2=0
-}
-
-func ExampleNew_allowNonIdempotent() {
+func ExampleWithFailoverAllowed() {
 	var hits1 atomic.Int32
 	var hits2 atomic.Int32
 
@@ -181,7 +140,6 @@ func ExampleNew_allowNonIdempotent() {
 			{ID: "primary", URL: srv1.URL},
 			{ID: "backup", URL: srv2.URL},
 		},
-		AllowNonIdempotent: true, // opt-in
 	})
 	if err != nil {
 		panic(err)
@@ -189,7 +147,8 @@ func ExampleNew_allowNonIdempotent() {
 
 	httpClient := &http.Client{Transport: rt}
 
-	req := jsonRPCRequest(context.Background(), srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0xdeadbeef"]}`)
+	ctx := rcpx.WithFailoverAllowed(context.Background())
+	req := jsonRPCRequest(ctx, srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0xdeadbeef"]}`)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -242,7 +201,8 @@ func ExampleNew_cooldownDisabled() {
 	httpClient := &http.Client{Transport: rt}
 
 	doCall := func() error {
-		req := jsonRPCRequest(context.Background(), srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
+		ctx := rcpx.WithFailoverAllowed(context.Background())
+		req := jsonRPCRequest(ctx, srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			return err
@@ -300,7 +260,8 @@ func ExampleNew_customRetryPolicy() {
 
 	httpClient := &http.Client{Transport: rt}
 
-	req := jsonRPCRequest(context.Background(), srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
+	ctx := rcpx.WithFailoverAllowed(context.Background())
+	req := jsonRPCRequest(ctx, srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
 
 	_, err = httpClient.Do(req)
 	if err == nil {

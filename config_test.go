@@ -69,16 +69,6 @@ func TestNewValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("negative body buffer bytes", func(t *testing.T) {
-		_, err := New(Config{
-			Endpoints:       testEndpoints(endpointURL),
-			BodyBufferBytes: -1,
-		})
-		if err == nil {
-			t.Fatal("expected error for negative BodyBufferBytes, got nil")
-		}
-	})
-
 	t.Run("negative cooldown values", func(t *testing.T) {
 		tests := []struct {
 			name     string
@@ -158,28 +148,6 @@ func TestNewValidation(t *testing.T) {
 				})
 				if err == nil {
 					t.Fatalf("expected error for status code %d, got nil", tt.code)
-				}
-			})
-		}
-	})
-
-	t.Run("invalid additional non idempotent methods", func(t *testing.T) {
-		tests := []struct {
-			name   string
-			method string
-		}{
-			{name: "empty", method: ""},
-			{name: "whitespace only", method: " \t\n"},
-		}
-
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				_, err := New(Config{
-					Endpoints:                      testEndpoints(endpointURL),
-					AdditionalNonIdempotentMethods: []string{tt.method},
-				})
-				if err == nil {
-					t.Fatalf("expected error for method %q, got nil", tt.method)
 				}
 			})
 		}
@@ -383,25 +351,6 @@ func TestNewAdditionalTriggerStatusCodes(t *testing.T) {
 
 		if _, ok := tr.cfg.retryableStatuses[500]; !ok {
 			t.Fatal("expected normalized trigger status 500")
-		}
-	})
-}
-
-func TestNewLegacyConfigurationStillResolves(t *testing.T) {
-	t.Run("body buffer bytes default", func(t *testing.T) {
-		tr := mustNewTransport(t, Config{Endpoints: testEndpoints(endpointURL)})
-		if tr.cfg.bodyCap != DefaultBodyBufferBytes {
-			t.Fatalf("expected bodyCap=%d, got %d", DefaultBodyBufferBytes, tr.cfg.bodyCap)
-		}
-	})
-
-	t.Run("duplicate additional non idempotent methods are accepted", func(t *testing.T) {
-		tr := mustNewTransport(t, Config{
-			Endpoints:                      testEndpoints(endpointURL),
-			AdditionalNonIdempotentMethods: []string{"custom_send", "custom_send"},
-		})
-		if _, ok := tr.cfg.nonIdempotentMethods["custom_send"]; !ok {
-			t.Fatal("expected custom_send to be normalized")
 		}
 	})
 }

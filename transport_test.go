@@ -70,6 +70,7 @@ func TestRoundTrip_AdditionalTriggerStatus_FailsOver(t *testing.T) {
 	})
 
 	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
 	resp := mustRoundTrip(t, rt, req)
 	assertStatus(t, resp, 200)
 	if !respBody.Closed() {
@@ -101,6 +102,7 @@ func TestRoundTrip_AdditionalTriggerStatus_DoesNotReplaceDefaults(t *testing.T) 
 	})
 
 	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
 	resp := mustRoundTrip(t, rt, req)
 	assertStatus(t, resp, 200)
 	if !respBody.Closed() {
@@ -197,6 +199,7 @@ func TestRoundTrip_NormalizesNilNilAsErrorAndFailsOver(t *testing.T) {
 	})
 
 	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
 	resp := mustRoundTrip(t, rt, req)
 
 	assertStatus(t, resp, 200)
@@ -224,6 +227,7 @@ func TestRoundTrip_FailoverOnTransportErrorEOF(t *testing.T) {
 	})
 
 	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
 	resp := mustRoundTrip(t, rt, req)
 
 	assertStatus(t, resp, 200)
@@ -265,6 +269,7 @@ func TestRoundTrip_FailoverOnRetryableHTTPStatus_ClosesBody(t *testing.T) {
 			})
 
 			req := newRPCRequest(t, u1, "eth_blockNumber")
+			req = req.WithContext(WithFailoverAllowed(req.Context()))
 			resp, err := rt.RoundTrip(req)
 			if err != nil {
 				t.Fatalf("RoundTrip returned error: %v", err)
@@ -304,6 +309,7 @@ func TestRoundTrip_ClosesBodyWhenRespAndErrReturnedThenFailsOver(t *testing.T) {
 	})
 
 	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
 	resp := mustRoundTrip(t, rt, req)
 
 	assertStatus(t, resp, 200)
@@ -376,6 +382,7 @@ func TestRoundTrip_PolicyCalledWhenConsideringContinuing(t *testing.T) {
 	})
 
 	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		t.Fatalf("RoundTrip error: %v", err)
@@ -480,6 +487,7 @@ func TestRoundTrip_PolicyCanStopFailoverOnRetryableStatus(t *testing.T) {
 	})
 
 	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
 	resp, err := rt.RoundTrip(req)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %#v", resp)
@@ -531,8 +539,8 @@ func TestRoundTrip_OnAttempt_SuccessFirstAttempt(t *testing.T) {
 	if got.Upstream != u1 {
 		t.Fatalf("expected Upstream=%q, got %q", u1, got.Upstream)
 	}
-	if got.Method != "eth_blockNumber" {
-		t.Fatalf("expected Method=eth_blockNumber, got %q", got.Method)
+	if got.Method != "" {
+		t.Fatalf("expected Method to remain empty, got %q", got.Method)
 	}
 	if got.Batch {
 		t.Fatalf("expected Batch=false")
@@ -572,6 +580,7 @@ func TestRoundTrip_OnAttempt_Failover(t *testing.T) {
 	})
 
 	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
 	resp := mustRoundTrip(t, rt, req)
 	assertStatus(t, resp, 200)
 
@@ -586,8 +595,8 @@ func TestRoundTrip_OnAttempt_Failover(t *testing.T) {
 	if first.Upstream != u1 {
 		t.Fatalf("expected first Upstream=%q, got %q", u1, first.Upstream)
 	}
-	if first.Method != "eth_blockNumber" {
-		t.Fatalf("expected first Method=eth_blockNumber, got %q", first.Method)
+	if first.Method != "" {
+		t.Fatalf("expected first Method to remain empty, got %q", first.Method)
 	}
 	if first.Batch {
 		t.Fatalf("expected first Batch=false")
@@ -609,8 +618,8 @@ func TestRoundTrip_OnAttempt_Failover(t *testing.T) {
 	if second.Upstream != u2 {
 		t.Fatalf("expected second Upstream=%q, got %q", u2, second.Upstream)
 	}
-	if second.Method != "eth_blockNumber" {
-		t.Fatalf("expected second Method=eth_blockNumber, got %q", second.Method)
+	if second.Method != "" {
+		t.Fatalf("expected second Method to remain empty, got %q", second.Method)
 	}
 	if second.Batch {
 		t.Fatalf("expected second Batch=false")
@@ -655,6 +664,7 @@ func TestRoundTrip_OnAttempt_PolicyStopsFailover(t *testing.T) {
 	})
 
 	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
 	resp, err := rt.RoundTrip(req)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %#v", resp)
@@ -690,248 +700,6 @@ func TestRoundTrip_OnAttempt_PolicyStopsFailover(t *testing.T) {
 	if !respBody.Closed() {
 		t.Fatalf("expected 503 response body closed when not failing over")
 	}
-	assertCalls(t, base, u1)
-}
-
-func TestRoundTrip_OnAttempt_NonIdempotentBlocked(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {{resp: nil, err: io.EOF}},
-			u2: {{resp: httpResp(200, "ok"), err: nil}},
-		},
-	}
-
-	var attempts []AttemptInfo
-	rt := mustNewTransport(t, Config{
-		Endpoints: testEndpoints(u1, u2),
-		Base:      base,
-		OnAttempt: func(info AttemptInfo) {
-			attempts = append(attempts, info)
-		},
-	})
-
-	req := newRPCRequest(t, u1, "eth_sendRawTransaction")
-	resp, err := rt.RoundTrip(req)
-	if resp != nil {
-		t.Fatalf("expected nil response, got %#v", resp)
-	}
-
-	assertNonIdempotentBlocked(t, err, io.EOF)
-
-	if len(attempts) != 1 {
-		t.Fatalf("expected 1 attempt observation, got %d: %#v", len(attempts), attempts)
-	}
-
-	got := attempts[0]
-	if got.Attempt != 1 {
-		t.Fatalf("expected Attempt=1, got %d", got.Attempt)
-	}
-	if got.Upstream != u1 {
-		t.Fatalf("expected Upstream=%q, got %q", u1, got.Upstream)
-	}
-	if got.Method != "eth_sendRawTransaction" {
-		t.Fatalf("expected Method=eth_sendRawTransaction, got %q", got.Method)
-	}
-	if got.StatusCode != 0 {
-		t.Fatalf("expected StatusCode=0, got %d", got.StatusCode)
-	}
-	if !errors.Is(got.Err, io.EOF) {
-		t.Fatalf("expected Err to be io.EOF, got %v", got.Err)
-	}
-	if !got.Final {
-		t.Fatalf("expected Final=true")
-	}
-
-	assertCalls(t, base, u1)
-}
-
-func TestRoundTrip_NonIdempotentBlockedByDefault(t *testing.T) {
-	cases := []struct {
-		name string
-		body string
-	}{
-		{
-			name: "single non idempotent method",
-			body: `{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0xdeadbeef"]}`,
-		},
-		{
-			name: "batch containing non idempotent call",
-			body: `[
-				{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]},
-				{"jsonrpc":"2.0","id":2,"method":"eth_sendTransaction","params":[{"from":"0x0"}]}
-			]`,
-		},
-		{
-			name: "invalid json treated non idempotent",
-			body: `{not-json`,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			u1 := "https://u1.test/rpc"
-			u2 := "https://u2.test/rpc"
-
-			base := &scriptRT{
-				results: map[string][]rtResult{
-					u1: {{resp: nil, err: io.EOF}},
-					u2: {{resp: httpResp(200, "ok"), err: nil}}, // should not be called when blocked
-				},
-			}
-
-			rt := mustNewTransport(t, Config{
-				Endpoints: testEndpoints(u1, u2),
-				Base:      base,
-				// AllowNonIdempotent defaults to false.
-			})
-
-			req := newJSONRequest(t, u1, tc.body)
-			resp, err := rt.RoundTrip(req)
-			if resp != nil {
-				t.Fatalf("expected nil response, got %#v", resp)
-			}
-
-			assertNonIdempotentBlocked(t, err, io.EOF)
-			assertCalls(t, base, u1)
-		})
-	}
-}
-
-func TestRoundTrip_NonIdempotentAllowed_FailoverSucceeds(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {{resp: nil, err: io.EOF}},
-			u2: {{resp: httpResp(200, "ok"), err: nil}},
-		},
-	}
-
-	rt := mustNewTransport(t, Config{
-		Endpoints:          testEndpoints(u1, u2),
-		Base:               base,
-		AllowNonIdempotent: true,
-	})
-
-	req := newJSONRequest(t, u1, `{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0xdeadbeef"]}`)
-	resp, err := rt.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("RoundTrip error: %v", err)
-	}
-	t.Cleanup(func() { resp.Body.Close() })
-
-	assertStatus(t, resp, 200)
-	assertCalls(t, base, u1, u2)
-}
-
-func TestRoundTrip_AdditionalNonIdempotentMethod_BlockedByDefault(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {{resp: nil, err: io.EOF}},
-			u2: {{resp: httpResp(200, "ok")}}, // should not be called when blocked
-		},
-	}
-
-	rt := mustNewTransport(t, Config{
-		Endpoints:                      testEndpoints(u1, u2),
-		Base:                           base,
-		AdditionalNonIdempotentMethods: []string{"custom_send"},
-	})
-
-	req := newRPCRequest(t, u1, "custom_send")
-	resp, err := rt.RoundTrip(req)
-	if resp != nil {
-		t.Fatalf("expected nil response, got %#v", resp)
-	}
-
-	var be *NonIdempotentBlockedError
-	if !errors.As(err, &be) {
-		t.Fatalf("expected NonIdempotentBlockedError, got %v", err)
-	}
-	if !errors.Is(err, io.EOF) {
-		t.Fatalf("expected underlying cause io.EOF, got %v", err)
-	}
-	if be.Outcome.Method != "custom_send" {
-		t.Fatalf("expected blocked method custom_send, got %q", be.Outcome.Method)
-	}
-
-	assertCalls(t, base, u1)
-}
-
-func TestRoundTrip_AdditionalNonIdempotentMethod_AllowNonIdempotentFailsOver(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {{resp: nil, err: io.EOF}},
-			u2: {{resp: httpResp(200, "ok")}},
-		},
-	}
-
-	rt := mustNewTransport(t, Config{
-		Endpoints:                      testEndpoints(u1, u2),
-		Base:                           base,
-		AllowNonIdempotent:             true,
-		AdditionalNonIdempotentMethods: []string{"custom_send"},
-	})
-
-	req := newRPCRequest(t, u1, "custom_send")
-	resp, err := rt.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("RoundTrip error: %v", err)
-	}
-	t.Cleanup(func() { resp.Body.Close() })
-
-	assertStatus(t, resp, 200)
-	assertCalls(t, base, u1, u2)
-}
-
-func TestRoundTrip_BatchWithAdditionalNonIdempotentMethod_BlockedByDefault(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {{resp: nil, err: io.EOF}},
-			u2: {{resp: httpResp(200, "ok")}}, // should not be called when blocked
-		},
-	}
-
-	rt := mustNewTransport(t, Config{
-		Endpoints:                      testEndpoints(u1, u2),
-		Base:                           base,
-		AdditionalNonIdempotentMethods: []string{"custom_send"},
-	})
-
-	req := newJSONRequest(t, u1, `[
-		{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]},
-		{"jsonrpc":"2.0","id":2,"method":"custom_send","params":[]}
-	]`)
-
-	resp, err := rt.RoundTrip(req)
-	if resp != nil {
-		t.Fatalf("expected nil response, got %#v", resp)
-	}
-
-	var be *NonIdempotentBlockedError
-	if !errors.As(err, &be) {
-		t.Fatalf("expected NonIdempotentBlockedError, got %v", err)
-	}
-	if !errors.Is(err, io.EOF) {
-		t.Fatalf("expected underlying cause io.EOF, got %v", err)
-	}
-	if !be.Outcome.Batch {
-		t.Fatalf("expected batch outcome")
-	}
-
 	assertCalls(t, base, u1)
 }
 
@@ -1152,7 +920,10 @@ func TestCooldown_TripsAfterNConsecutiveFailoverFailures_SkipsCooledUpstream(t *
 	fixedNow := time.Unix(100, 0)
 	tr.now = func() time.Time { return fixedNow }
 
-	makeReq := func() *http.Request { return newRPCRequest(t, u1, "eth_blockNumber") }
+	makeReq := func() *http.Request {
+		req := newRPCRequest(t, u1, "eth_blockNumber")
+		return req.WithContext(WithFailoverAllowed(req.Context()))
+	}
 
 	mustRoundTripCode(t, tr, makeReq(), 200)
 	mustRoundTripCode(t, tr, makeReq(), 200)
@@ -1199,7 +970,10 @@ func TestCooldown_ResetsOnSuccess(t *testing.T) {
 	fixedNow := time.Unix(200, 0)
 	tr.now = func() time.Time { return fixedNow }
 
-	makeReq := func() *http.Request { return newRPCRequest(t, u1, "eth_blockNumber") }
+	makeReq := func() *http.Request {
+		req := newRPCRequest(t, u1, "eth_blockNumber")
+		return req.WithContext(WithFailoverAllowed(req.Context()))
+	}
 
 	mustRoundTripCode(t, tr, makeReq(), 200)
 	mustRoundTripCode(t, tr, makeReq(), 200)
@@ -1320,6 +1094,7 @@ func TestRoundTrip_UsesConfiguredEndpointOrder(t *testing.T) {
 	})
 
 	req := newRPCRequest(t, secondURL, "eth_blockNumber")
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
 	resp := mustRoundTrip(t, tr, req)
 	assertStatus(t, resp, 200)
 	assertCalls(t, base, firstURL, secondURL)
@@ -1397,6 +1172,7 @@ func TestRoundTrip_AllUpstreamsFailedError_CollectsFailuresAndUnwrapsCause(t *te
 	})
 
 	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
 	resp, err := tr.RoundTrip(req)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %#v", resp)
@@ -1437,68 +1213,6 @@ func TestRoundTrip_AllUpstreamsFailedError_CollectsFailuresAndUnwrapsCause(t *te
 	}
 
 	assertCalls(t, base, u1, u2)
-}
-
-func TestRoundTrip_BodyBufferedOnce_ReplayedAcrossAttempts(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	payload := `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`
-
-	var gotURLs []string
-	var gotBodies []string
-
-	readBody := func(req *http.Request) string {
-		t.Helper()
-
-		b, err := io.ReadAll(req.Body)
-		if err != nil {
-			t.Fatalf("read req body: %v", err)
-		}
-		req.Body.Close()
-		return string(b)
-	}
-
-	dispatch := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		gotURLs = append(gotURLs, req.URL.String())
-		gotBodies = append(gotBodies, readBody(req))
-
-		switch req.URL.String() {
-		case u1:
-			// Fail in a retryable way so rcpx will fail over.
-			return nil, io.EOF
-		case u2:
-			return &http.Response{
-				StatusCode: 200,
-				Body:       io.NopCloser(strings.NewReader("ok")),
-				Header:     make(http.Header),
-				Request:    req,
-			}, nil
-		default:
-			return nil, errors.New("unexpected url: " + req.URL.String())
-		}
-	})
-
-	rt := mustNewTransport(t, Config{
-		Endpoints: testEndpoints(u1, u2),
-		Base:      dispatch,
-	})
-
-	req := newJSONRequest(t, u1, payload)
-	resp, err := rt.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("RoundTrip error: %v", err)
-	}
-	t.Cleanup(func() { resp.Body.Close() })
-
-	assertStatus(t, resp, 200)
-
-	if len(gotURLs) != 2 || gotURLs[0] != u1 || gotURLs[1] != u2 {
-		t.Fatalf("unexpected attempt order: %v", gotURLs)
-	}
-	if len(gotBodies) != 2 || gotBodies[0] != payload || gotBodies[1] != payload {
-		t.Fatalf("unexpected bodies: %q", gotBodies)
-	}
 }
 
 func TestRoundTrip_PreservesNilBodyWhenOriginalBodyNilAndEmpty(t *testing.T) {
@@ -1543,56 +1257,6 @@ func TestRoundTrip_PreservesNilBodyWhenOriginalBodyNilAndEmpty(t *testing.T) {
 	t.Cleanup(func() { resp.Body.Close() })
 
 	assertStatus(t, resp, 200)
-}
-
-func TestRoundTrip_BodyTooLarge_ReturnsErrBodyTooLarge_BaseNotCalled(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-
-	base := &scriptRT{results: map[string][]rtResult{}}
-
-	rt := mustNewTransport(t, Config{
-		Endpoints:       testEndpoints(u1),
-		Base:            base,
-		BodyBufferBytes: 8, // tiny cap
-	})
-
-	// 9 bytes > cap
-	req := newJSONRequest(t, u1, "123456789")
-	resp, err := rt.RoundTrip(req)
-	if resp != nil {
-		t.Fatalf("expected nil response, got %#v", resp)
-	}
-	if !errors.Is(err, ErrBodyTooLarge) {
-		t.Fatalf("expected ErrBodyTooLarge, got %v", err)
-	}
-
-	assertCalls(t, base)
-}
-
-func TestRoundTrip_BodyUnreadable_ReturnsErrBodyUnreadable_BaseNotCalled(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-
-	base := &scriptRT{results: map[string][]rtResult{}}
-
-	rt := mustNewTransport(t, Config{
-		Endpoints: testEndpoints(u1),
-		Base:      base,
-	})
-
-	req, err := http.NewRequest("POST", u1, io.NopCloser(unreadableReader{}))
-	if err != nil {
-		t.Fatalf("http.NewRequest: %v", err)
-	}
-
-	resp, rerr := rt.RoundTrip(req)
-	if resp != nil {
-		t.Fatalf("expected nil response, got %#v", resp)
-	}
-	if !errors.Is(rerr, ErrBodyUnreadable) {
-		t.Fatalf("expected errors.Is(err, ErrBodyUnreadable)=true, got %v", rerr)
-	}
-
-	assertCalls(t, base)
 }
 
 type closeIdleTrackingRT struct {

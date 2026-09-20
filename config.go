@@ -27,28 +27,24 @@ type Config struct {
 	// Base transport used for all attempts. If nil, http.DefaultTransport is used.
 	Base http.RoundTripper
 
+	// PermissionPolicy classifies whether a logical request may continue to
+	// another configured endpoint. It is evaluated at most once per RoundTrip
+	// when no explicit request-scoped permission is present. It may be called
+	// concurrently for different requests and must not mutate the request or
+	// consume, close, or replace Request.Body.
+	PermissionPolicy func(*http.Request) Permission
+
 	// Cooldown behavior after consecutive retryable failures. The zero value
 	// enables cooldown with defaults.
 	Cooldown CooldownConfig
 
-	// If false, rcpx will not retry/failover non-idempotent methods.
-	AllowNonIdempotent bool
-
-	// Per-request request-body buffer cap in bytes.
-	// 0 => DefaultBodyBufferBytes
-	// <0 => invalid
-	BodyBufferBytes int
-
-	// Retry/failover policy hook. If nil, the default policy is used.
+	// Retry/failover trigger-policy hook. If nil, the default policy is used.
+	// This temporary surface
 	RetryPolicy RetryPolicy
 
 	// AdditionalTriggerStatusCodes are additional three-digit HTTP status codes
 	// that trigger the existing failover machinery.
 	AdditionalTriggerStatusCodes []int
-
-	// AdditionalNonIdempotentMethods are JSON-RPC method names treated as
-	// non-idempotent in addition to the built-ins.
-	AdditionalNonIdempotentMethods []string
 
 	// OnAttempt, if non-nil, is called after each upstream attempt with basic
 	// attempt outcome information. The callback is called synchronously.
@@ -66,7 +62,7 @@ type AttemptInfo struct {
 	// contains them.
 	Upstream string
 
-	// Method and Batch describe the JSON-RPC request body, best-effort.
+	// Method and Batch are retained temporarily for the legacy attempt surface.
 	Method string
 	Batch  bool
 
@@ -111,18 +107,16 @@ type effectiveCooldown struct {
 
 // resolvedConfig is the internal, fully-normalized configuration used at runtime.
 type resolvedConfig struct {
-	endpoints     []resolvedEndpoint
-	endpointIndex map[EndpointID]int
-	base          http.RoundTripper
-	cooldown      effectiveCooldown
-	allowNI       bool
-	bodyCap       int
+	endpoints        []resolvedEndpoint
+	endpointIndex    map[EndpointID]int
+	base             http.RoundTripper
+	permissionPolicy func(*http.Request) Permission
+	cooldown         effectiveCooldown
 
 	policy    RetryPolicy
 	onAttempt func(AttemptInfo)
 
-	retryableStatuses    map[int]struct{}
-	nonIdempotentMethods map[string]struct{}
+	retryableStatuses map[int]struct{}
 }
 
 func resolveConfig(cfg Config) (resolvedConfig, error) {
@@ -172,14 +166,6 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 		base = http.DefaultTransport
 	}
 
-	bodyCap := cfg.BodyBufferBytes
-	if bodyCap < 0 {
-		return resolvedConfig{}, fmt.Errorf("rcpx: invalid BodyBufferBytes %d", bodyCap)
-	}
-	if bodyCap == 0 {
-		bodyCap = DefaultBodyBufferBytes
-	}
-
 	cooldown, err := resolveCooldown(cfg.Cooldown)
 	if err != nil {
 		return resolvedConfig{}, err
@@ -195,23 +181,16 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 		return resolvedConfig{}, err
 	}
 
-	nonIdempotentMethods, err := resolveNonIdempotentMethods(cfg.AdditionalNonIdempotentMethods)
-	if err != nil {
-		return resolvedConfig{}, err
-	}
-
 	return resolvedConfig{
-		endpoints:     endpoints,
-		endpointIndex: endpointIndex,
-		base:          base,
-		cooldown:      cooldown,
-		allowNI:       cfg.AllowNonIdempotent,
-		bodyCap:       bodyCap,
-		policy:        policy,
-		onAttempt:     cfg.OnAttempt,
+		endpoints:        endpoints,
+		endpointIndex:    endpointIndex,
+		base:             base,
+		permissionPolicy: cfg.PermissionPolicy,
+		cooldown:         cooldown,
+		policy:           policy,
+		onAttempt:        cfg.OnAttempt,
 
-		retryableStatuses:    statuses,
-		nonIdempotentMethods: nonIdempotentMethods,
+		retryableStatuses: statuses,
 	}, nil
 }
 
@@ -268,21 +247,4 @@ func resolveTriggerStatusCodes(additional []int) (map[int]struct{}, error) {
 
 func validHTTPStatusCode(code int) bool {
 	return code >= 100 && code <= 999
-}
-
-func resolveNonIdempotentMethods(additional []string) (map[string]struct{}, error) {
-	methods := map[string]struct{}{
-		"eth_sendTransaction":    {},
-		"eth_sendRawTransaction": {},
-	}
-
-	for i, method := range additional {
-		if strings.TrimSpace(method) == "" {
-			return nil, fmt.Errorf("rcpx: invalid AdditionalNonIdempotentMethods[%d]: empty method name", i)
-		}
-
-		methods[method] = struct{}{}
-	}
-
-	return methods, nil
 }

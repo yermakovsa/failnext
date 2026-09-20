@@ -1,7 +1,6 @@
 package rcpx
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -101,7 +100,7 @@ func (t *Transport) eligibleEndpoints(now time.Time) (eligible []int, skippedCoo
 	return eligible, skippedCooldown
 }
 
-func (t *Transport) notifyAttempt(attempt int, upstream, method string, batch bool, statusCode int, err error, final bool) {
+func (t *Transport) notifyAttempt(attempt int, upstream string, statusCode int, err error, final bool) {
 	if t.cfg.onAttempt == nil {
 		return
 	}
@@ -109,8 +108,6 @@ func (t *Transport) notifyAttempt(attempt int, upstream, method string, batch bo
 	t.cfg.onAttempt(AttemptInfo{
 		Attempt:    attempt,
 		Upstream:   upstream,
-		Method:     method,
-		Batch:      batch,
 		StatusCode: statusCode,
 		Err:        err,
 		Final:      final,
@@ -123,20 +120,18 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	ctx := req.Context()
+	originalBodyOwned := req.Body != nil
+	defer func() {
+		if originalBodyOwned {
+			req.Body.Close()
+		}
+	}()
+
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	body, err := bufferRequestBody(req, t.cfg.bodyCap)
-	if err != nil {
-		return nil, err
-	}
-
-	// Best-effort method parsing; parse failure => treat as non-idempotent.
-	method, batch, nonIdempotent, ok := parseJSONRPCMethod(body, t.cfg.nonIdempotentMethods)
-	if !ok {
-		nonIdempotent = true
-	}
+	permission := resolvePermission(req, t.cfg.permissionPolicy)
 
 	now := t.now()
 	eligible, skippedCooldown := t.eligibleEndpoints(now)
@@ -150,12 +145,29 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	failures := make([]AttemptFailure, 0, len(eligible))
 	attemptNo := 0
+	attemptBody := req.Body
+	var replayBody io.ReadCloser
+	var replayBodyOwned bool
+	defer func() {
+		if replayBodyOwned && replayBody != nil {
+			replayBody.Close()
+		}
+	}()
 
 	for pos, idx := range eligible {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
 		attemptNo++
 		endpoint := t.cfg.endpoints[idx]
+		areq := cloneRequestForEndpoint(req, endpoint.url, attemptBody)
 
-		areq := cloneRequestForEndpoint(req, endpoint.url, body)
+		if attemptNo == 1 {
+			originalBodyOwned = false
+		} else {
+			replayBodyOwned = false
+		}
 
 		resp, rerr := t.cfg.base.RoundTrip(areq)
 		resp, rerr = normalizeBaseRoundTrip(resp, rerr, endpoint.raw)
@@ -167,7 +179,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 				finalErr = ctx.Err()
 			}
 			closeResponseBody(resp)
-			t.notifyAttempt(attemptNo, endpoint.raw, method, batch, 0, finalErr, true)
+			t.notifyAttempt(attemptNo, endpoint.raw, 0, finalErr, true)
 
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
@@ -184,7 +196,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// Non-retryable HTTP statuses are treated as "success" from rcpx's
 		// perspective and returned unchanged.
 		if t.cfg.isAttemptSuccess(status, rerr) {
-			t.notifyAttempt(attemptNo, endpoint.raw, method, batch, status, nil, true)
+			t.notifyAttempt(attemptNo, endpoint.raw, status, nil, true)
 			if t.cooldown != nil {
 				t.cooldown.recordSuccess(idx)
 			}
@@ -197,51 +209,56 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			cause = &httpStatusError{code: status, upstream: endpoint.raw}
 		}
 
-		out := t.cfg.buildAttemptOutcome(attemptNo, endpoint.raw, method, batch, status, rerr)
+		out := t.cfg.buildAttemptOutcome(attemptNo, endpoint.raw, status, rerr)
 
 		hasNext := pos < len(eligible)-1
 		continueToNext := false
 		if hasNext {
-			// Policy is called only on non-success when considering continuing.
-			continueToNext = shouldContinue(t.cfg.policy, out)
-		}
-
-		// Idempotency rail: non-idempotent requests never fail over unless allowed.
-		if nonIdempotent && !t.cfg.allowNI && continueToNext {
-			closeResponseBody(resp)
-			t.notifyAttempt(attemptNo, endpoint.raw, method, batch, status, cause, true)
-			return nil, &NonIdempotentBlockedError{
-				Outcome: out,
-				Cause:   cause,
-			}
+			// RetryPolicy remains the temporary trigger decision. Semantic permission
+			// is an independent logical-request gate on cross-endpoint continuation.
+			continueToNext = shouldContinue(t.cfg.policy, out) && permission == PermissionAllow
 		}
 
 		if continueToNext {
-			closeResponseBody(resp)
-			t.notifyAttempt(attemptNo, endpoint.raw, method, batch, status, cause, false)
-
-			if t.cooldown != nil {
-				t.cooldown.recordFailoverFailure(now, idx)
+			nextBody, replayable, replayErr := replayBodyForNextAttempt(req)
+			if replayErr != nil {
+				closeResponseBody(resp)
+				t.notifyAttempt(attemptNo, endpoint.raw, status, cause, true)
+				return nil, replayErr
 			}
-			failures = append(failures, AttemptFailure{
-				Upstream:   endpoint.raw,
-				Method:     method,
-				Batch:      batch,
-				StatusCode: status,
-				Err:        cause,
-				Retryable:  true,
-			})
-			continue
+			if replayable {
+				replayBody = nextBody
+				replayBodyOwned = nextBody != nil && nextBody != http.NoBody
+				attemptBody = nextBody
+
+				if err := ctx.Err(); err != nil {
+					closeResponseBody(resp)
+					t.notifyAttempt(attemptNo, endpoint.raw, status, cause, true)
+					return nil, err
+				}
+
+				closeResponseBody(resp)
+				t.notifyAttempt(attemptNo, endpoint.raw, status, cause, false)
+
+				if t.cooldown != nil {
+					t.cooldown.recordFailoverFailure(now, idx)
+				}
+				failures = append(failures, AttemptFailure{
+					Upstream:   endpoint.raw,
+					StatusCode: status,
+					Err:        cause,
+					Retryable:  true,
+				})
+				continue
+			}
 		}
 
 		closeResponseBody(resp)
 
-		t.notifyAttempt(attemptNo, endpoint.raw, method, batch, status, cause, true)
+		t.notifyAttempt(attemptNo, endpoint.raw, status, cause, true)
 
 		failures = append(failures, AttemptFailure{
 			Upstream:   endpoint.raw,
-			Method:     method,
-			Batch:      batch,
 			StatusCode: status,
 			Err:        cause,
 			Retryable:  false,
@@ -261,35 +278,30 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 }
 
-// bufferRequestBody reads and buffers req.Body up to cap bytes.
-func bufferRequestBody(req *http.Request, capBytes int) ([]byte, error) {
-	if req == nil || req.Body == nil {
-		return nil, nil
+func replayBodyForNextAttempt(req *http.Request) (body io.ReadCloser, replayable bool, err error) {
+	if req.Body == nil {
+		return nil, true, nil
 	}
-	if capBytes <= 0 {
-		capBytes = DefaultBodyBufferBytes
+	if req.Body == http.NoBody {
+		return http.NoBody, true, nil
+	}
+	if req.GetBody == nil {
+		return nil, false, nil
 	}
 
-	defer req.Body.Close()
-
-	limited := io.LimitReader(req.Body, int64(capBytes)+1)
-	b, err := io.ReadAll(limited)
+	body, err = req.GetBody()
 	if err != nil {
-		return nil, errors.Join(ErrBodyUnreadable, err)
+		if body != nil {
+			body.Close()
+		}
+		return nil, false, err
 	}
-	if len(b) > capBytes {
-		return nil, ErrBodyTooLarge
-	}
-	return b, nil
+	return body, true, nil
 }
 
 // cloneRequestForEndpoint clones orig and targets the provided endpoint URL.
-//
-// If orig.Body is nil and bodyBytes is empty, the clone preserves a nil Body (and
-// nil GetBody).
-//
-// NOTE: endpoint must be a full target URL; there is no path joining.
-func cloneRequestForEndpoint(orig *http.Request, endpoint *url.URL, bodyBytes []byte) *http.Request {
+// endpoint must be a full target URL; there is no path joining.
+func cloneRequestForEndpoint(orig *http.Request, endpoint *url.URL, body io.ReadCloser) *http.Request {
 	r := orig.Clone(orig.Context())
 
 	if endpoint != nil {
@@ -298,21 +310,6 @@ func cloneRequestForEndpoint(orig *http.Request, endpoint *url.URL, bodyBytes []
 	}
 
 	r.RequestURI = ""
-
-	if orig.Body == nil && len(bodyBytes) == 0 {
-		r.Body = nil
-		r.GetBody = nil
-		r.ContentLength = 0
-		return r
-	}
-
-	br := bytes.NewReader(bodyBytes)
-	r.Body = io.NopCloser(br)
-	r.ContentLength = int64(len(bodyBytes))
-
-	r.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(bodyBytes)), nil
-	}
-
+	r.Body = body
 	return r
 }
