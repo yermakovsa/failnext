@@ -24,16 +24,12 @@ func main() {
 		{ID: "backup", URL: "http://127.0.0.1:65533"},
 	}
 
-	fmt.Println("== demo 1: AllUpstreamsFailedError (exhaust all upstreams) ==")
+	fmt.Println("== AllUpstreamsFailedError (exhaust all upstreams) ==")
 	demoAllUpstreamsFailed(timeout, endpoints)
-
-	fmt.Println()
-	fmt.Println("== demo 2: NonIdempotentBlockedError (no failover for writes by default) ==")
-	demoNonIdempotentBlocked(timeout, endpoints)
 }
 
 func demoAllUpstreamsFailed(timeout time.Duration, endpoints []rcpx.Endpoint) {
-	rpcClient, err := dialRPC(timeout, endpoints, false /* allowNonIdempotent */)
+	rpcClient, err := dialRPC(timeout, endpoints)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "setup: %v\n", err)
 		return
@@ -45,7 +41,7 @@ func demoAllUpstreamsFailed(timeout time.Duration, endpoints []rcpx.Endpoint) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	_, err = ec.BlockNumber(ctx)
+	_, err = ec.BlockNumber(rcpx.WithFailoverAllowed(ctx))
 	if err == nil {
 		fmt.Println("unexpected: call succeeded")
 		return
@@ -71,40 +67,10 @@ func demoAllUpstreamsFailed(timeout time.Duration, endpoints []rcpx.Endpoint) {
 	)
 }
 
-func demoNonIdempotentBlocked(timeout time.Duration, endpoints []rcpx.Endpoint) {
-	rpcClient, err := dialRPC(timeout, endpoints, false /* allowNonIdempotent */)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "setup: %v\n", err)
-		return
-	}
-	defer rpcClient.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	// Dummy payload. rcpx may attempt once, but won't retry/fail over for writes by default.
-	var txHash string
-	err = rpcClient.CallContext(ctx, &txHash, "eth_sendRawTransaction", "0xdeadbeef")
-	if err == nil {
-		fmt.Println("unexpected: call succeeded")
-		return
-	}
-
-	var be *rcpx.NonIdempotentBlockedError
-	if !errors.As(err, &be) {
-		fmt.Printf("unexpected error type: %T: %v\n", err, err)
-		return
-	}
-
-	fmt.Printf("blocked method=%s retryableByDefault=%v\n", be.Outcome.Method, be.Outcome.RetryableByDefault)
-	fmt.Printf("cause=%v\n", be.Unwrap())
-}
-
-func dialRPC(timeout time.Duration, endpoints []rcpx.Endpoint, allowNonIdempotent bool) (*rpc.Client, error) {
+func dialRPC(timeout time.Duration, endpoints []rcpx.Endpoint) (*rpc.Client, error) {
 	rt, err := rcpx.New(rcpx.Config{
-		Endpoints:          endpoints,
-		Base:               http.DefaultTransport,
-		AllowNonIdempotent: allowNonIdempotent,
+		Endpoints: endpoints,
+		Base:      http.DefaultTransport,
 	})
 	if err != nil {
 		return nil, err

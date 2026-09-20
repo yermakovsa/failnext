@@ -19,12 +19,6 @@ const (
 
 	// DefaultCooldownDuration is the default cooldown duration.
 	DefaultCooldownDuration = 30 * time.Second
-
-	// DefaultBodyBufferBytes is the default per-request cap for buffering request
-	// bodies to enable failover/retry.
-	//
-	// This is a conservative default.
-	DefaultBodyBufferBytes = 1 << 20 // 1 MiB
 )
 
 // New validates cfg and returns a reusable Transport.

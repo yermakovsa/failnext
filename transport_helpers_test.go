@@ -32,10 +32,6 @@ func (b *trackingBody) Closed() bool {
 	return b.closed
 }
 
-type unreadableReader struct{}
-
-func (unreadableReader) Read([]byte) (int, error) { return 0, errors.New("read fail") }
-
 type rtResult struct {
 	resp *http.Response
 	err  error
@@ -111,7 +107,7 @@ func newRPCRequest(t *testing.T, url, method string) *http.Request {
 func newJSONRequest(t *testing.T, url, body string) *http.Request {
 	t.Helper()
 
-	req, err := http.NewRequest("POST", url, io.NopCloser(strings.NewReader(body)))
+	req, err := http.NewRequest("POST", url, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("http.NewRequest: %v", err)
 	}
@@ -179,18 +175,6 @@ func assertCalls(t *testing.T, base *scriptRT, want ...string) {
 		if got[i] != want[i] {
 			t.Fatalf("unexpected base calls: got=%v want=%v", got, want)
 		}
-	}
-}
-
-func assertNonIdempotentBlocked(t *testing.T, err error, cause error) {
-	t.Helper()
-
-	var be *NonIdempotentBlockedError
-	if !errors.As(err, &be) {
-		t.Fatalf("expected NonIdempotentBlockedError, got %v", err)
-	}
-	if !errors.Is(err, cause) {
-		t.Fatalf("expected underlying cause %v, got %v", cause, err)
 	}
 }
 

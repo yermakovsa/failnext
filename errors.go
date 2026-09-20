@@ -9,12 +9,6 @@ var (
 	// ErrNoEligibleUpstreams indicates that no upstreams were eligible to try
 	// (e.g., all cooling down).
 	ErrNoEligibleUpstreams = errors.New("rcpx: no eligible upstreams")
-
-	// ErrBodyTooLarge is returned when the request body exceeds the configured cap.
-	ErrBodyTooLarge = errors.New("rcpx: request body too large")
-
-	// ErrBodyUnreadable is returned when the request body cannot be read.
-	ErrBodyUnreadable = errors.New("rcpx: request body unreadable")
 )
 
 // AllUpstreamsFailedError is returned when no upstream attempt succeeded.
@@ -63,44 +57,13 @@ func (e *AllUpstreamsFailedError) Unwrap() error {
 
 // AttemptFailure records a failed attempt.
 type AttemptFailure struct {
-	Upstream   string
-	Method     string
-	Batch      bool
+	Upstream string
+
+	// Method and Batch are retained temporarily for the legacy error surface.
+	Method string
+	Batch  bool
+
 	StatusCode int
 	Err        error
 	Retryable  bool // whether rcpx continued after this attempt
-}
-
-// NonIdempotentBlockedError is returned when a request classified as
-// non-idempotent would otherwise retry/failover but AllowNonIdempotent is false.
-//
-// It wraps the underlying failure cause.
-type NonIdempotentBlockedError struct {
-	Outcome AttemptOutcome
-	Cause   error
-}
-
-func (e *NonIdempotentBlockedError) Error() string {
-	if e == nil {
-		return "rcpx: non-idempotent request blocked"
-	}
-
-	if e.Outcome.Method != "" {
-		if e.Cause != nil {
-			return fmt.Sprintf("rcpx: non-idempotent request blocked (%s): %v", e.Outcome.Method, e.Cause)
-		}
-		return fmt.Sprintf("rcpx: non-idempotent request blocked (%s)", e.Outcome.Method)
-	}
-
-	if e.Cause != nil {
-		return fmt.Sprintf("rcpx: non-idempotent request blocked: %v", e.Cause)
-	}
-	return "rcpx: non-idempotent request blocked"
-}
-
-func (e *NonIdempotentBlockedError) Unwrap() error {
-	if e == nil {
-		return nil
-	}
-	return e.Cause
 }

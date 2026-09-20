@@ -85,6 +85,7 @@ func main() {
 	fmt.Printf("cooldown demo: n=%d failAfter=%d cooldown=%s\n", n, failAfter, cooldown)
 	for i := 1; i <= n; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx = rcpx.WithFailoverAllowed(ctx)
 		_, err := ec.BlockNumber(ctx)
 		cancel()
 

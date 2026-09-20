@@ -28,7 +28,6 @@ func main() {
 		Endpoints: endpointsFromURLs(upstreams),
 		Base:      http.DefaultTransport,
 		// Cooldown defaults enabled.
-		// AllowNonIdempotent defaults false (safe).
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create rcpx transport: %v\n", err)
@@ -53,13 +52,13 @@ func main() {
 
 	ec := ethclient.NewClient(rpcClient)
 
-	chainID, err := ec.ChainID(ctx)
+	chainID, err := ec.ChainID(rcpx.WithFailoverAllowed(ctx))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "chain id: %v\n", err)
 		os.Exit(1)
 	}
 
-	blockNum, err := ec.BlockNumber(ctx)
+	blockNum, err := ec.BlockNumber(rcpx.WithFailoverAllowed(ctx))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "block number: %v\n", err)
 		os.Exit(1)

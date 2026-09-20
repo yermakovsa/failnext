@@ -5,9 +5,9 @@ import (
 	"errors"
 )
 
-// RetryPolicy decides whether rcpx should continue to another upstream after a
-// non-success attempt. RoundTrip enforces cancellation and idempotency rails
-// before calling it.
+// RetryPolicy decides whether the temporary trigger machinery should consider
+// continuing to another upstream after a non-success attempt. Semantic failover
+// permission is resolved separately for the logical request.
 type RetryPolicy func(out AttemptOutcome) (retry bool)
 
 // AttemptOutcome describes the outcome of one upstream attempt.
@@ -17,7 +17,7 @@ type AttemptOutcome struct {
 	Attempt  int
 	Upstream string
 
-	// JSON-RPC request info (best-effort).
+	// Method and Batch are retained temporarily for the legacy trigger surface.
 	Method string
 	Batch  bool
 
@@ -62,24 +62,19 @@ func (cfg resolvedConfig) retryableByOutcome(statusCode int, err error) bool {
 }
 
 // statusCode should be 0 when no HTTP response was obtained.
-func (cfg resolvedConfig) buildAttemptOutcome(attempt int, upstream, method string, batch bool, statusCode int, err error) AttemptOutcome {
+func (cfg resolvedConfig) buildAttemptOutcome(attempt int, upstream string, statusCode int, err error) AttemptOutcome {
 	return AttemptOutcome{
 		Attempt:            attempt,
 		Upstream:           upstream,
-		Method:             method,
-		Batch:              batch,
 		StatusCode:         statusCode,
 		Err:                err,
 		RetryableByDefault: cfg.retryableByOutcome(statusCode, err),
 	}
 }
 
-// shouldContinue decides whether rcpx should try another upstream after a
-// non-success attempt.
-//
-// RoundTrip enforces rails before calling this:
-//   - cancellation/deadline returns immediately (policy not called)
-//   - non-idempotent safety cannot be overridden unless AllowNonIdempotent is true
+// shouldContinue reports whether the temporary trigger policy wants to
+// continue after a non-success attempt. RoundTrip returns immediately on
+// cancellation/deadline before calling this; semantic permission is separate.
 func shouldContinue(policy RetryPolicy, out AttemptOutcome) bool {
 	if policy == nil {
 		return defaultRetryPolicy(out)
