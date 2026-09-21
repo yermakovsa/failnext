@@ -6,14 +6,17 @@ import (
 )
 
 var (
-	// ErrNoEligibleUpstreams indicates that no upstreams were eligible to try
-	// (e.g., all cooling down).
-	ErrNoEligibleUpstreams = errors.New("rcpx: no eligible upstreams")
+	// ErrNoUsableEndpoint indicates that no physical endpoint could be admitted
+	// for the logical request.
+	ErrNoUsableEndpoint = errors.New("rcpx: no usable endpoint")
+
+	// ErrUnknownEndpoint indicates that a request-scoped endpoint reference does
+	// not identify an endpoint configured on the processing Transport.
+	ErrUnknownEndpoint = errors.New("rcpx: unknown endpoint")
 )
 
-// AllUpstreamsFailedError is returned when no upstream attempt succeeded.
-//
-// For Attempted==0, Unwrap() returns ErrNoEligibleUpstreams.
+// AllUpstreamsFailedError is returned when one or more upstream attempts were
+// made and no attempt succeeded.
 type AllUpstreamsFailedError struct {
 	Attempted       int
 	SkippedCooldown int
@@ -26,9 +29,6 @@ func (e *AllUpstreamsFailedError) Error() string {
 	if e == nil {
 		return "rcpx: all upstreams failed"
 	}
-	if e.Attempted == 0 {
-		return "rcpx: no eligible upstreams"
-	}
 
 	cause := e.Unwrap()
 	if cause == nil {
@@ -37,14 +37,10 @@ func (e *AllUpstreamsFailedError) Error() string {
 	return fmt.Sprintf("rcpx: all upstreams failed (attempted=%d): %v", e.Attempted, cause)
 }
 
-// Unwrap returns the last failure cause, or ErrNoEligibleUpstreams when no
-// attempts were made.
+// Unwrap returns the last failure cause, if any.
 func (e *AllUpstreamsFailedError) Unwrap() error {
 	if e == nil {
 		return nil
-	}
-	if e.Attempted == 0 {
-		return ErrNoEligibleUpstreams
 	}
 
 	for i := len(e.Failures) - 1; i >= 0; i-- {

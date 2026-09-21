@@ -398,7 +398,7 @@ func TestRoundTrip_PolicyCalledWhenConsideringContinuing(t *testing.T) {
 	assertCalls(t, base, u1, u2)
 }
 
-func TestRoundTrip_PolicyNotCalledOnLastEligibleAttempt(t *testing.T) {
+func TestRoundTrip_PolicyRunsBeforeLaterCandidateCooldownAdmission(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 	u2 := "https://u2.test/rpc"
 
@@ -410,7 +410,8 @@ func TestRoundTrip_PolicyNotCalledOnLastEligibleAttempt(t *testing.T) {
 			u1: {
 				{resp: resp1, err: nil},
 			},
-			// u2 would succeed if called, but we will force it ineligible via cooldown.
+			// u2 remains in the fixed consideration order, but will be cooling
+			// when its turn reaches live admission.
 			u2: {
 				{resp: httpResp(200, "ok"), err: nil},
 			},
@@ -428,7 +429,6 @@ func TestRoundTrip_PolicyNotCalledOnLastEligibleAttempt(t *testing.T) {
 	fixedNow := time.Unix(1, 0)
 	tr.now = func() time.Time { return fixedNow }
 
-	// Force upstream2 to be cooling down so it is not eligible.
 	if tr.cooldown == nil {
 		t.Fatalf("expected cooldown tracker")
 	}
@@ -438,6 +438,7 @@ func TestRoundTrip_PolicyNotCalledOnLastEligibleAttempt(t *testing.T) {
 	tr.cooldown.mu.Unlock()
 
 	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
 	resp, err := tr.RoundTrip(req)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %#v", resp)
@@ -451,7 +452,7 @@ func TestRoundTrip_PolicyNotCalledOnLastEligibleAttempt(t *testing.T) {
 		t.Fatalf("expected SkippedCooldown=1, got %d", ae.SkippedCooldown)
 	}
 
-	assertPolicyCalls(t, pol, 0)
+	assertPolicyCalls(t, pol, 1)
 
 	if !respBody.Closed() {
 		t.Fatalf("expected 503 response body closed on terminal failure")
@@ -886,6 +887,223 @@ func TestRoundTrip_DeadlineExceededDoesNotCountForCooldownByDefault(t *testing.T
 	assertCalls(t, base, u1, u1)
 }
 
+func TestRoundTrip_LiveCooldownSkipsCandidateThatBeginsCoolingBeforeTurn(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+	u3 := "https://u3.test/rpc"
+	fixedNow := time.Unix(600, 0)
+
+	var tr *Transport
+	var calls []string
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		calls = append(calls, req.URL.String())
+
+		switch req.URL.String() {
+		case u1:
+			tr.cooldown.mu.Lock()
+			tr.cooldown.coolingTo[1] = fixedNow.Add(time.Hour)
+			tr.cooldown.mu.Unlock()
+			return nil, io.EOF
+		case u2:
+			return nil, errors.New("cooling candidate was physically attempted")
+		case u3:
+			return httpResp(http.StatusOK, "ok"), nil
+		default:
+			return nil, fmt.Errorf("unexpected URL: %s", req.URL)
+		}
+	})
+
+	tr = mustNewTransport(t, Config{
+		Endpoints: testEndpoints(u1, u2, u3),
+		Base:      base,
+	})
+	tr.now = func() time.Time { return fixedNow }
+
+	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
+	resp := mustRoundTrip(t, tr, req)
+	assertStatus(t, resp, http.StatusOK)
+
+	want := []string{u1, u3}
+	if len(calls) != len(want) {
+		t.Fatalf("unexpected physical attempts: got=%v want=%v", calls, want)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Fatalf("unexpected physical attempts: got=%v want=%v", calls, want)
+		}
+	}
+}
+
+func TestRoundTrip_LiveCooldownAdmitsCandidateThatExpiresBeforeTurn(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+
+	now := time.Unix(700, 0)
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case u1:
+			now = now.Add(2 * time.Hour)
+			return nil, io.EOF
+		case u2:
+			return httpResp(http.StatusOK, "ok"), nil
+		default:
+			return nil, fmt.Errorf("unexpected URL: %s", req.URL)
+		}
+	})
+
+	tr := mustNewTransport(t, Config{
+		Endpoints: testEndpoints(u1, u2),
+		Base:      base,
+	})
+	tr.now = func() time.Time { return now }
+
+	tr.cooldown.mu.Lock()
+	tr.cooldown.coolingTo[1] = now.Add(time.Hour)
+	tr.cooldown.mu.Unlock()
+
+	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
+	resp := mustRoundTrip(t, tr, req)
+	assertStatus(t, resp, http.StatusOK)
+}
+
+func TestRoundTrip_LiveCooldownNeverRevisitsPassedEndpoint(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+	u3 := "https://u3.test/rpc"
+
+	now := time.Unix(800, 0)
+	var calls []string
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		calls = append(calls, req.URL.String())
+
+		switch req.URL.String() {
+		case u1:
+			return nil, io.EOF
+		case u2:
+			return nil, errors.New("cooling candidate was physically attempted")
+		case u3:
+			now = now.Add(2 * time.Hour)
+			return nil, io.ErrUnexpectedEOF
+		default:
+			return nil, fmt.Errorf("unexpected URL: %s", req.URL)
+		}
+	})
+
+	tr := mustNewTransport(t, Config{
+		Endpoints: testEndpoints(u1, u2, u3),
+		Base:      base,
+		Cooldown: CooldownConfig{
+			Threshold: 1,
+			Duration:  time.Hour,
+		},
+	})
+	tr.now = func() time.Time { return now }
+
+	tr.cooldown.mu.Lock()
+	tr.cooldown.coolingTo[1] = now.Add(time.Hour)
+	tr.cooldown.mu.Unlock()
+
+	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
+	resp, err := tr.RoundTrip(req)
+	if resp != nil {
+		t.Fatalf("expected nil response, got %#v", resp)
+	}
+
+	ae := mustAsAllUpstreamsFailed(t, err)
+	if ae.Attempted != 2 {
+		t.Fatalf("expected Attempted=2, got %d", ae.Attempted)
+	}
+	if ae.SkippedCooldown != 1 {
+		t.Fatalf("expected SkippedCooldown=1, got %d", ae.SkippedCooldown)
+	}
+
+	want := []string{u1, u3}
+	if len(calls) != len(want) {
+		t.Fatalf("unexpected physical attempts: got=%v want=%v", calls, want)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Fatalf("unexpected physical attempts: got=%v want=%v", calls, want)
+		}
+	}
+}
+
+func TestRoundTrip_MixedEligibilityAndLiveCooldownAdmission(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+	u3 := "https://u3.test/rpc"
+	fixedNow := time.Unix(900, 0)
+
+	base := &scriptRT{
+		results: map[string][]rtResult{
+			u3: {{resp: httpResp(http.StatusOK, "ok")}},
+		},
+	}
+	tr := mustNewTransport(t, Config{
+		Endpoints: testEndpoints(u1, u2, u3),
+		Base:      base,
+		Eligible: func(id EndpointID) bool {
+			return id != "endpoint-1"
+		},
+	})
+	tr.now = func() time.Time { return fixedNow }
+
+	tr.cooldown.mu.Lock()
+	tr.cooldown.coolingTo[1] = fixedNow.Add(time.Hour)
+	tr.cooldown.mu.Unlock()
+
+	req := newRPCRequest(t, u1, "eth_blockNumber")
+	resp := mustRoundTrip(t, tr, req)
+	assertStatus(t, resp, http.StatusOK)
+	assertCalls(t, base, u3)
+}
+
+func TestRoundTrip_CooldownSkipDoesNotConsumeAttemptNumber(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+	u3 := "https://u3.test/rpc"
+	fixedNow := time.Unix(1000, 0)
+
+	base := &scriptRT{
+		results: map[string][]rtResult{
+			u1: {{err: io.EOF}},
+			u3: {{resp: httpResp(http.StatusOK, "ok")}},
+		},
+	}
+	var attempts []AttemptInfo
+	tr := mustNewTransport(t, Config{
+		Endpoints: testEndpoints(u1, u2, u3),
+		Base:      base,
+		OnAttempt: func(info AttemptInfo) {
+			attempts = append(attempts, info)
+		},
+	})
+	tr.now = func() time.Time { return fixedNow }
+
+	tr.cooldown.mu.Lock()
+	tr.cooldown.coolingTo[1] = fixedNow.Add(time.Hour)
+	tr.cooldown.mu.Unlock()
+
+	req := newRPCRequest(t, u1, "eth_blockNumber")
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
+	resp := mustRoundTrip(t, tr, req)
+	assertStatus(t, resp, http.StatusOK)
+
+	if len(attempts) != 2 {
+		t.Fatalf("expected 2 physical attempt observations, got %d: %#v", len(attempts), attempts)
+	}
+	if attempts[0].Attempt != 1 || attempts[0].Upstream != u1 || attempts[0].Final {
+		t.Fatalf("unexpected first attempt observation: %#v", attempts[0])
+	}
+	if attempts[1].Attempt != 2 || attempts[1].Upstream != u3 || !attempts[1].Final {
+		t.Fatalf("unexpected second attempt observation: %#v", attempts[1])
+	}
+	assertCalls(t, base, u1, u3)
+}
+
 func TestCooldown_TripsAfterNConsecutiveFailoverFailures_SkipsCooledUpstream(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 	u2 := "https://u2.test/rpc"
@@ -985,7 +1203,7 @@ func TestCooldown_ResetsOnSuccess(t *testing.T) {
 	assertCalls(t, base, u1, u2, u1, u1, u2)
 }
 
-func TestCooldown_NoEligibleUpstreams_ReturnsAggregateError_UnwrapsSentinel(t *testing.T) {
+func TestCooldown_AllCandidatesCooling_ReturnsErrNoUsableEndpoint(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 	u2 := "https://u2.test/rpc"
 
@@ -1002,14 +1220,9 @@ func TestCooldown_NoEligibleUpstreams_ReturnsAggregateError_UnwrapsSentinel(t *t
 	fixedNow := time.Unix(300, 0)
 	tr.now = func() time.Time { return fixedNow }
 
-	// Force both upstreams into cooldown.
-	if tr.cooldown == nil {
-		t.Fatalf("expected cooldown tracker")
-	}
 	tr.cooldown.mu.Lock()
-	tr.cooldown.enabled = true
-	tr.cooldown.coolingTo[0] = fixedNow.Add(1 * time.Hour)
-	tr.cooldown.coolingTo[1] = fixedNow.Add(1 * time.Hour)
+	tr.cooldown.coolingTo[0] = fixedNow.Add(time.Hour)
+	tr.cooldown.coolingTo[1] = fixedNow.Add(time.Hour)
 	tr.cooldown.mu.Unlock()
 
 	req := newRPCRequest(t, u1, "eth_blockNumber")
@@ -1017,18 +1230,13 @@ func TestCooldown_NoEligibleUpstreams_ReturnsAggregateError_UnwrapsSentinel(t *t
 	if resp != nil {
 		t.Fatalf("expected nil response, got %#v", resp)
 	}
-
-	ae := mustAsAllUpstreamsFailed(t, err)
-	if ae.Attempted != 0 {
-		t.Fatalf("expected Attempted=0, got %d", ae.Attempted)
+	if !errors.Is(err, ErrNoUsableEndpoint) {
+		t.Fatalf("expected ErrNoUsableEndpoint, got %v", err)
 	}
-	if ae.SkippedCooldown != 2 {
-		t.Fatalf("expected SkippedCooldown=2, got %d", ae.SkippedCooldown)
+	var ae *AllUpstreamsFailedError
+	if errors.As(err, &ae) {
+		t.Fatalf("expected direct zero-attempt error, got aggregate: %#v", ae)
 	}
-	if !errors.Is(err, ErrNoEligibleUpstreams) {
-		t.Fatalf("expected errors.Is(err, ErrNoEligibleUpstreams)=true, got %v", err)
-	}
-
 	assertCalls(t, base)
 }
 

@@ -61,8 +61,8 @@ func demoAllUpstreamsFailed(timeout time.Duration, endpoints []rcpx.Endpoint) {
 			i+1, f.Upstream, f.StatusCode, f.Retryable, f.Err)
 	}
 
-	fmt.Printf("errors.Is(ErrNoEligibleUpstreams)=%v errors.Is(context.Canceled)=%v\n",
-		errors.Is(err, rcpx.ErrNoEligibleUpstreams),
+	fmt.Printf("errors.Is(ErrNoUsableEndpoint)=%v errors.Is(context.Canceled)=%v\n",
+		errors.Is(err, rcpx.ErrNoUsableEndpoint),
 		errors.Is(err, context.Canceled),
 	)
 }
