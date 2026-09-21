@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRoundTrip_BodylessRequestCanContinue(t *testing.T) {
@@ -315,6 +316,81 @@ func TestRoundTrip_RetryPolicyStopDoesNotCallGetBody(t *testing.T) {
 		t.Fatalf("expected GetBody not to be called when RetryPolicy stops continuation, got %d calls", getBodyCalls)
 	}
 	assertCalls(t, base, u1)
+}
+
+func TestRoundTrip_CooldownSkipDoesNotConsumeReplayBody(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+	u3 := "https://u3.test/rpc"
+	fixedNow := time.Unix(1100, 0)
+
+	var calls []string
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		calls = append(calls, req.URL.String())
+		if req.Body != nil {
+			if _, err := io.ReadAll(req.Body); err != nil {
+				t.Fatalf("read request body: %v", err)
+			}
+			if err := req.Body.Close(); err != nil {
+				t.Fatalf("close request body: %v", err)
+			}
+		}
+
+		switch req.URL.String() {
+		case u1:
+			return nil, io.EOF
+		case u2:
+			return nil, errors.New("cooling candidate was physically attempted")
+		case u3:
+			return httpResp(http.StatusOK, "ok"), nil
+		default:
+			return nil, errors.New("unexpected URL: " + req.URL.String())
+		}
+	})
+
+	rt := mustNewTransport(t, Config{
+		Endpoints: testEndpoints(u1, u2, u3),
+		Base:      base,
+	})
+	rt.now = func() time.Time { return fixedNow }
+
+	rt.cooldown.mu.Lock()
+	rt.cooldown.coolingTo[1] = fixedNow.Add(time.Hour)
+	rt.cooldown.mu.Unlock()
+
+	req, err := http.NewRequest(http.MethodPost, u1, strings.NewReader("payload"))
+	if err != nil {
+		t.Fatalf("http.NewRequest: %v", err)
+	}
+	if req.GetBody == nil {
+		t.Fatal("expected standard request to provide GetBody")
+	}
+	getBodyCalls := 0
+	getBody := req.GetBody
+	req.GetBody = func() (io.ReadCloser, error) {
+		getBodyCalls++
+		return getBody()
+	}
+	req = req.WithContext(WithFailoverAllowed(req.Context()))
+
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip error: %v", err)
+	}
+	resp.Body.Close()
+
+	if getBodyCalls != 1 {
+		t.Fatalf("expected GetBody calls=1 for admitted u3 only, got %d", getBodyCalls)
+	}
+	want := []string{u1, u3}
+	if len(calls) != len(want) {
+		t.Fatalf("unexpected physical attempts: got=%v want=%v", calls, want)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Fatalf("unexpected physical attempts: got=%v want=%v", calls, want)
+		}
+	}
 }
 
 func TestRoundTrip_DoesNotPreReadRequestBody(t *testing.T) {

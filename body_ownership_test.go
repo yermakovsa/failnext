@@ -40,7 +40,7 @@ func TestRoundTrip_ClosesOriginalBodyWhenContextDoneBeforeHandoff(t *testing.T) 
 	assertCalls(t, base)
 }
 
-func TestRoundTrip_ClosesOriginalBodyWhenNoEndpointIsAttempted(t *testing.T) {
+func TestRoundTrip_ClosesOriginalBodyWhenAllCandidatesCooling(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 	body := newTrackingBody("payload")
 	base := &scriptRT{results: map[string][]rtResult{}}
@@ -69,15 +69,72 @@ func TestRoundTrip_ClosesOriginalBodyWhenNoEndpointIsAttempted(t *testing.T) {
 	if resp != nil {
 		t.Fatalf("expected nil response, got %#v", resp)
 	}
-	ae := mustAsAllUpstreamsFailed(t, err)
-	if ae.Attempted != 0 {
-		t.Fatalf("expected Attempted=0, got %d", ae.Attempted)
-	}
-	if !errors.Is(err, ErrNoEligibleUpstreams) {
-		t.Fatalf("expected ErrNoEligibleUpstreams, got %v", err)
+	if !errors.Is(err, ErrNoUsableEndpoint) {
+		t.Fatalf("expected ErrNoUsableEndpoint, got %v", err)
 	}
 	if !body.Closed() {
-		t.Fatal("expected rcpx to close original body when no physical attempt occurs")
+		t.Fatal("expected rcpx to close original body when all candidates are cooling")
+	}
+	assertCalls(t, base)
+}
+
+func TestRoundTrip_ClosesOriginalBodyWhenAllEndpointsExternallyIneligible(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+	body := newTrackingBody("payload")
+	base := &scriptRT{results: map[string][]rtResult{}}
+
+	rt := mustNewTransport(t, Config{
+		Endpoints: testEndpoints(u1, u2),
+		Base:      base,
+		Eligible: func(EndpointID) bool {
+			return false
+		},
+	})
+
+	req, err := http.NewRequest(http.MethodPost, u1, body)
+	if err != nil {
+		t.Fatalf("http.NewRequest: %v", err)
+	}
+
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		t.Fatalf("expected nil response, got %#v", resp)
+	}
+	if !errors.Is(err, ErrNoUsableEndpoint) {
+		t.Fatalf("expected ErrNoUsableEndpoint, got %v", err)
+	}
+	if !body.Closed() {
+		t.Fatal("expected rcpx to close original body when all endpoints are externally ineligible")
+	}
+	assertCalls(t, base)
+}
+
+func TestRoundTrip_ClosesOriginalBodyWhenPreferredEndpointIsUnknown(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	body := newTrackingBody("payload")
+	base := &scriptRT{results: map[string][]rtResult{}}
+
+	rt := mustNewTransport(t, Config{
+		Endpoints: testEndpoints(u1),
+		Base:      base,
+	})
+
+	req, err := http.NewRequest(http.MethodPost, u1, body)
+	if err != nil {
+		t.Fatalf("http.NewRequest: %v", err)
+	}
+	req = req.WithContext(WithPreferredEndpoint(req.Context(), "missing"))
+
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		t.Fatalf("expected nil response, got %#v", resp)
+	}
+	if !errors.Is(err, ErrUnknownEndpoint) {
+		t.Fatalf("expected ErrUnknownEndpoint, got %v", err)
+	}
+	if !body.Closed() {
+		t.Fatal("expected rcpx to close original body when preferred endpoint is unknown")
 	}
 	assertCalls(t, base)
 }

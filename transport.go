@@ -1,6 +1,7 @@
 package rcpx
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -88,16 +89,48 @@ func normalizeBaseRoundTrip(resp *http.Response, err error, upstream string) (*h
 	return resp, err
 }
 
-func (t *Transport) eligibleEndpoints(now time.Time) (eligible []int, skippedCooldown int) {
-	eligible = make([]int, 0, len(t.cfg.endpoints))
-	for i := range t.cfg.endpoints {
-		if t.cooldown == nil || t.cooldown.eligible(now, i) {
-			eligible = append(eligible, i)
+func (t *Transport) considerationOrder(ctx context.Context) ([]int, error) {
+	order := make([]int, 0, len(t.cfg.endpoints))
+	for i, endpoint := range t.cfg.endpoints {
+		if t.cfg.eligible == nil || t.cfg.eligible(endpoint.id) {
+			order = append(order, i)
+		}
+	}
+
+	preferred, ok := preferredEndpoint(ctx)
+	if !ok {
+		return order, nil
+	}
+
+	preferredIdx, ok := t.cfg.endpointIndex[preferred]
+	if !ok {
+		return nil, fmt.Errorf("%w %q", ErrUnknownEndpoint, preferred)
+	}
+
+	for pos, idx := range order {
+		if idx != preferredIdx {
 			continue
 		}
-		skippedCooldown++
+		if pos > 0 {
+			copy(order[1:pos+1], order[:pos])
+			order[0] = preferredIdx
+		}
+		break
 	}
-	return eligible, skippedCooldown
+
+	return order, nil
+}
+
+func (t *Transport) nextAdmittedCandidate(order []int, start int) (idx int, next int, skipped int, ok bool) {
+	for pos := start; pos < len(order); pos++ {
+		idx := order[pos]
+		now := t.now()
+		if t.cooldown == nil || t.cooldown.eligible(now, idx) {
+			return idx, pos + 1, skipped, true
+		}
+		skipped++
+	}
+	return 0, len(order), skipped, false
 }
 
 func (t *Transport) notifyAttempt(attempt int, upstream string, statusCode int, err error, final bool) {
@@ -133,17 +166,15 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	permission := resolvePermission(req, t.cfg.permissionPolicy)
 
-	now := t.now()
-	eligible, skippedCooldown := t.eligibleEndpoints(now)
-	if len(eligible) == 0 {
-		return nil, &AllUpstreamsFailedError{
-			Attempted:       0,
-			SkippedCooldown: skippedCooldown,
-			Failures:        nil,
-		}
+	considerationOrder, err := t.considerationOrder(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(considerationOrder) == 0 {
+		return nil, ErrNoUsableEndpoint
 	}
 
-	failures := make([]AttemptFailure, 0, len(eligible))
+	failures := make([]AttemptFailure, 0, len(considerationOrder))
 	attemptNo := 0
 	attemptBody := req.Body
 	var replayBody io.ReadCloser
@@ -154,7 +185,15 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}()
 
-	for pos, idx := range eligible {
+	idx, nextPos, skippedCooldown, ok := t.nextAdmittedCandidate(considerationOrder, 0)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrNoUsableEndpoint
+	}
+
+	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -211,50 +250,68 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		out := t.cfg.buildAttemptOutcome(attemptNo, endpoint.raw, status, rerr)
 
-		hasNext := pos < len(eligible)-1
 		continueToNext := false
-		if hasNext {
+		if nextPos < len(considerationOrder) {
 			// RetryPolicy remains the temporary trigger decision. Semantic permission
 			// is an independent logical-request gate on cross-endpoint continuation.
 			continueToNext = shouldContinue(t.cfg.policy, out) && permission == PermissionAllow
 		}
 
 		if continueToNext {
-			nextBody, replayable, replayErr := replayBodyForNextAttempt(req)
-			if replayErr != nil {
+			if err := ctx.Err(); err != nil {
 				closeResponseBody(resp)
 				t.notifyAttempt(attemptNo, endpoint.raw, status, cause, true)
-				return nil, replayErr
+				return nil, err
 			}
-			if replayable {
-				replayBody = nextBody
-				replayBodyOwned = nextBody != nil && nextBody != http.NoBody
-				attemptBody = nextBody
 
-				if err := ctx.Err(); err != nil {
+			nextIdx, afterNext, skipped, admitted := t.nextAdmittedCandidate(considerationOrder, nextPos)
+			skippedCooldown += skipped
+			nextPos = afterNext
+
+			if err := ctx.Err(); err != nil {
+				closeResponseBody(resp)
+				t.notifyAttempt(attemptNo, endpoint.raw, status, cause, true)
+				return nil, err
+			}
+
+			if admitted {
+				nextBody, replayable, replayErr := replayBodyForNextAttempt(req)
+				if replayErr != nil {
 					closeResponseBody(resp)
 					t.notifyAttempt(attemptNo, endpoint.raw, status, cause, true)
-					return nil, err
+					return nil, replayErr
 				}
+				if replayable {
+					replayBody = nextBody
+					replayBodyOwned = nextBody != nil && nextBody != http.NoBody
+					attemptBody = nextBody
 
-				closeResponseBody(resp)
-				t.notifyAttempt(attemptNo, endpoint.raw, status, cause, false)
+					if err := ctx.Err(); err != nil {
+						closeResponseBody(resp)
+						t.notifyAttempt(attemptNo, endpoint.raw, status, cause, true)
+						return nil, err
+					}
 
-				if t.cooldown != nil {
-					t.cooldown.recordFailoverFailure(now, idx)
+					closeResponseBody(resp)
+					t.notifyAttempt(attemptNo, endpoint.raw, status, cause, false)
+
+					if t.cooldown != nil {
+						t.cooldown.recordFailoverFailure(t.now(), idx)
+					}
+					failures = append(failures, AttemptFailure{
+						Upstream:   endpoint.raw,
+						StatusCode: status,
+						Err:        cause,
+						Retryable:  true,
+					})
+
+					idx = nextIdx
+					continue
 				}
-				failures = append(failures, AttemptFailure{
-					Upstream:   endpoint.raw,
-					StatusCode: status,
-					Err:        cause,
-					Retryable:  true,
-				})
-				continue
 			}
 		}
 
 		closeResponseBody(resp)
-
 		t.notifyAttempt(attemptNo, endpoint.raw, status, cause, true)
 
 		failures = append(failures, AttemptFailure{
@@ -269,12 +326,6 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			SkippedCooldown: skippedCooldown,
 			Failures:        failures,
 		}
-	}
-
-	return nil, &AllUpstreamsFailedError{
-		Attempted:       attemptNo,
-		SkippedCooldown: skippedCooldown,
-		Failures:        failures,
 	}
 }
 

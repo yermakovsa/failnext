@@ -34,6 +34,11 @@ type Config struct {
 	// consume, close, or replace Request.Body.
 	PermissionPolicy func(*http.Request) Permission
 
+	// Eligible reports whether a configured endpoint may participate in a logical
+	// request. If nil, all configured endpoints are externally eligible. It may
+	// be called concurrently for different requests and should return promptly.
+	Eligible func(EndpointID) bool
+
 	// Cooldown behavior after consecutive retryable failures. The zero value
 	// enables cooldown with defaults.
 	Cooldown CooldownConfig
@@ -111,6 +116,7 @@ type resolvedConfig struct {
 	endpointIndex    map[EndpointID]int
 	base             http.RoundTripper
 	permissionPolicy func(*http.Request) Permission
+	eligible         func(EndpointID) bool
 	cooldown         effectiveCooldown
 
 	policy    RetryPolicy
@@ -186,6 +192,7 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 		endpointIndex:    endpointIndex,
 		base:             base,
 		permissionPolicy: cfg.PermissionPolicy,
+		eligible:         cfg.Eligible,
 		cooldown:         cooldown,
 		policy:           policy,
 		onAttempt:        cfg.OnAttempt,
