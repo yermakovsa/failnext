@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestRoundTrip_HTTP500_IsTreatedAsSuccess_NoFailover(t *testing.T) {
+func TestRoundTrip_HTTP500_IsTerminal_NoFailover(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 	u2 := "https://u2.test/rpc"
 
@@ -39,7 +39,7 @@ func TestRoundTrip_HTTP500_IsTreatedAsSuccess_NoFailover(t *testing.T) {
 
 	assertStatus(t, resp, 500)
 
-	// For a non-retryable status, the response is returned unchanged and the caller owns the body.
+	// For a non-trigger status, the response is returned unchanged and the caller owns the body.
 	if respBody.Closed() {
 		t.Fatalf("expected returned response body to remain open")
 	}
@@ -111,7 +111,7 @@ func TestRoundTrip_AdditionalTriggerStatus_DoesNotReplaceDefaults(t *testing.T) 
 	assertCalls(t, base, u1, u2)
 }
 
-func TestRoundTrip_NonConfiguredStatus_IsTreatedAsSuccess_NoFailover(t *testing.T) {
+func TestRoundTrip_NonConfiguredStatus_IsTerminal_NoFailover(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 	u2 := "https://u2.test/rpc"
 
@@ -146,11 +146,11 @@ func TestRoundTrip_NonConfiguredStatus_IsTreatedAsSuccess_NoFailover(t *testing.
 	assertCalls(t, base, u1)
 }
 
-func TestRoundTrip_HTTP200_WithJSONRPCErrorPayload_IsTreatedAsSuccess_NoFailover(t *testing.T) {
+func TestRoundTrip_HTTP200_WithJSONRPCErrorPayload_IsTerminal_NoFailover(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 	u2 := "https://u2.test/rpc"
 
-	// rcpx must not interpret the JSON-RPC payload; HTTP 200 is treated as success.
+	// rcpx must not interpret the JSON-RPC payload; HTTP 200 is non-triggering and terminal.
 	jsonrpcErrResp := `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"boom"}}`
 
 	base := &scriptRT{
@@ -213,7 +213,7 @@ func TestRoundTrip_FailoverOnTransportErrorEOF(t *testing.T) {
 	base := &scriptRT{
 		results: map[string][]rtResult{
 			u1: {
-				{resp: nil, err: io.EOF}, // retryable transport error => failover
+				{resp: nil, err: io.EOF}, // live-context transport error => failover
 			},
 			u2: {
 				{resp: httpResp(200, "ok"), err: nil},
@@ -234,14 +234,13 @@ func TestRoundTrip_FailoverOnTransportErrorEOF(t *testing.T) {
 	assertCalls(t, base, u1, u2)
 }
 
-func TestRoundTrip_FailoverOnRetryableHTTPStatus_ClosesBody(t *testing.T) {
+func TestRoundTrip_FailoverOnBuiltInTriggerStatus_ClosesBody(t *testing.T) {
 	cases := []struct {
 		name   string
 		status int
 		body   string
 	}{
 		{name: "503 service unavailable", status: 503, body: "service unavailable"},
-		{name: "429 too many requests", status: 429, body: "rate limited"},
 		{name: "502 bad gateway", status: 502, body: "bad gateway"},
 		{name: "504 gateway timeout", status: 504, body: "gateway timeout"},
 	}
@@ -317,194 +316,6 @@ func TestRoundTrip_ClosesBodyWhenRespAndErrReturnedThenFailsOver(t *testing.T) {
 		t.Fatalf("expected response body from (resp, err) attempt to be closed before failover")
 	}
 	assertCalls(t, base, u1, u2)
-}
-
-func TestRoundTrip_PolicyNotCalledOnSuccess(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {
-				{resp: httpResp(200, "ok"), err: nil},
-			},
-			// Not expected to be called.
-			u2: {
-				{resp: httpResp(200, "ok"), err: nil},
-			},
-		},
-	}
-
-	pol, policy := newPolicyRecorder(true)
-
-	rt := mustNewTransport(t, Config{
-		Endpoints:   testEndpoints(u1, u2),
-		Base:        base,
-		RetryPolicy: policy,
-	})
-
-	req := newRPCRequest(t, u1, "eth_blockNumber")
-	resp, err := rt.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("RoundTrip error: %v", err)
-	}
-	t.Cleanup(func() { resp.Body.Close() })
-
-	assertStatus(t, resp, 200)
-	assertCalls(t, base, u1)
-	assertPolicyCalls(t, pol, 0)
-}
-
-func TestRoundTrip_PolicyCalledWhenConsideringContinuing(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	respBody := newTrackingBody("retry me")
-	resp1 := &http.Response{StatusCode: 503, Body: respBody}
-
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {
-				{resp: resp1, err: nil}, // retryable status => rcpx will consider continuing
-			},
-			u2: {
-				{resp: httpResp(200, "ok"), err: nil},
-			},
-		},
-	}
-
-	pol, policy := newPolicyRecorder(true) // allow failover
-
-	rt := mustNewTransport(t, Config{
-		Endpoints:   testEndpoints(u1, u2),
-		Base:        base,
-		RetryPolicy: policy,
-	})
-
-	req := newRPCRequest(t, u1, "eth_blockNumber")
-	req = req.WithContext(WithFailoverAllowed(req.Context()))
-	resp, err := rt.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("RoundTrip error: %v", err)
-	}
-	t.Cleanup(func() { resp.Body.Close() })
-
-	assertStatus(t, resp, 200)
-	assertPolicyCalls(t, pol, 1)
-
-	if !respBody.Closed() {
-		t.Fatalf("expected 503 response body closed before failover")
-	}
-	assertCalls(t, base, u1, u2)
-}
-
-func TestRoundTrip_PolicyRunsBeforeLaterCandidateCooldownAdmission(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	respBody := newTrackingBody("retry me")
-	resp1 := &http.Response{StatusCode: 503, Body: respBody}
-
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {
-				{resp: resp1, err: nil},
-			},
-			// u2 remains in the fixed consideration order, but will be cooling
-			// when its turn reaches live admission.
-			u2: {
-				{resp: httpResp(200, "ok"), err: nil},
-			},
-		},
-	}
-
-	pol, policy := newPolicyRecorder(true)
-
-	tr := mustNewTransport(t, Config{
-		Endpoints:   testEndpoints(u1, u2),
-		Base:        base,
-		RetryPolicy: policy,
-	})
-
-	fixedNow := time.Unix(1, 0)
-	tr.now = func() time.Time { return fixedNow }
-
-	if tr.cooldown == nil {
-		t.Fatalf("expected cooldown tracker")
-	}
-	tr.cooldown.mu.Lock()
-	tr.cooldown.enabled = true
-	tr.cooldown.coolingTo[1] = fixedNow.Add(1 * time.Hour)
-	tr.cooldown.mu.Unlock()
-
-	req := newRPCRequest(t, u1, "eth_blockNumber")
-	req = req.WithContext(WithFailoverAllowed(req.Context()))
-	resp, err := tr.RoundTrip(req)
-	if resp != nil {
-		t.Fatalf("expected nil response, got %#v", resp)
-	}
-
-	ae := mustAsAllUpstreamsFailed(t, err)
-	if ae.Attempted != 1 {
-		t.Fatalf("expected Attempted=1, got %d", ae.Attempted)
-	}
-	if ae.SkippedCooldown != 1 {
-		t.Fatalf("expected SkippedCooldown=1, got %d", ae.SkippedCooldown)
-	}
-
-	assertPolicyCalls(t, pol, 1)
-
-	if !respBody.Closed() {
-		t.Fatalf("expected 503 response body closed on terminal failure")
-	}
-	assertCalls(t, base, u1)
-}
-
-func TestRoundTrip_PolicyCanStopFailoverOnRetryableStatus(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	respBody := newTrackingBody("retry me")
-	resp1 := &http.Response{StatusCode: 503, Body: respBody}
-
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {
-				{resp: resp1, err: nil},
-			},
-			// If rcpx fails over anyway, this will be called and the test should fail.
-			u2: {
-				{resp: httpResp(200, "ok"), err: nil},
-			},
-		},
-	}
-
-	pol, policy := newPolicyRecorder(false) // stop failover
-
-	rt := mustNewTransport(t, Config{
-		Endpoints:   testEndpoints(u1, u2),
-		Base:        base,
-		RetryPolicy: policy,
-	})
-
-	req := newRPCRequest(t, u1, "eth_blockNumber")
-	req = req.WithContext(WithFailoverAllowed(req.Context()))
-	resp, err := rt.RoundTrip(req)
-	if resp != nil {
-		t.Fatalf("expected nil response, got %#v", resp)
-	}
-
-	ae := mustAsAllUpstreamsFailed(t, err)
-	if ae.Attempted != 1 {
-		t.Fatalf("expected Attempted=1, got %d", ae.Attempted)
-	}
-
-	assertPolicyCalls(t, pol, 1)
-
-	if !respBody.Closed() {
-		t.Fatalf("expected 503 response body closed when not failing over")
-	}
-	assertCalls(t, base, u1)
 }
 
 func TestRoundTrip_OnAttempt_SuccessFirstAttempt(t *testing.T) {
@@ -641,69 +452,6 @@ func TestRoundTrip_OnAttempt_Failover(t *testing.T) {
 	assertCalls(t, base, u1, u2)
 }
 
-func TestRoundTrip_OnAttempt_PolicyStopsFailover(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	respBody := newTrackingBody("service unavailable")
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {{resp: &http.Response{StatusCode: 503, Body: respBody}, err: nil}},
-			u2: {{resp: httpResp(200, "ok"), err: nil}},
-		},
-	}
-
-	var attempts []AttemptInfo
-	pol, policy := newPolicyRecorder(false)
-	rt := mustNewTransport(t, Config{
-		Endpoints:   testEndpoints(u1, u2),
-		Base:        base,
-		RetryPolicy: policy,
-		OnAttempt: func(info AttemptInfo) {
-			attempts = append(attempts, info)
-		},
-	})
-
-	req := newRPCRequest(t, u1, "eth_blockNumber")
-	req = req.WithContext(WithFailoverAllowed(req.Context()))
-	resp, err := rt.RoundTrip(req)
-	if resp != nil {
-		t.Fatalf("expected nil response, got %#v", resp)
-	}
-
-	ae := mustAsAllUpstreamsFailed(t, err)
-	if ae.Attempted != 1 {
-		t.Fatalf("expected Attempted=1, got %d", ae.Attempted)
-	}
-
-	if len(attempts) != 1 {
-		t.Fatalf("expected 1 attempt observation, got %d: %#v", len(attempts), attempts)
-	}
-
-	got := attempts[0]
-	if got.Attempt != 1 {
-		t.Fatalf("expected Attempt=1, got %d", got.Attempt)
-	}
-	if got.Upstream != u1 {
-		t.Fatalf("expected Upstream=%q, got %q", u1, got.Upstream)
-	}
-	if got.StatusCode != 503 {
-		t.Fatalf("expected StatusCode=503, got %d", got.StatusCode)
-	}
-	if got.Err == nil {
-		t.Fatalf("expected Err to be non nil")
-	}
-	if !got.Final {
-		t.Fatalf("expected Final=true")
-	}
-
-	assertPolicyCalls(t, pol, 1)
-	if !respBody.Closed() {
-		t.Fatalf("expected 503 response body closed when not failing over")
-	}
-	assertCalls(t, base, u1)
-}
-
 func TestRoundTrip_ContextDoneBeforeCall_BaseNotCalled(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 
@@ -760,131 +508,6 @@ func TestRoundTrip_ContextDoneBeforeCall_BaseNotCalled(t *testing.T) {
 		}
 		assertCalls(t, base)
 	})
-}
-
-func TestRoundTrip_CanceledByBase_ReturnsImmediately(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {
-				{resp: nil, err: fmt.Errorf("wrapped: %w", context.Canceled)},
-			},
-			// If rcpx incorrectly fails over, we'd hit u2.
-			u2: {
-				{resp: httpResp(200, "ok"), err: nil},
-			},
-		},
-	}
-
-	pol, policy := newPolicyRecorder(true)
-
-	rt := mustNewTransport(t, Config{
-		Endpoints:   testEndpoints(u1, u2),
-		Base:        base,
-		RetryPolicy: policy,
-	})
-
-	req := newRPCRequest(t, u1, "eth_blockNumber")
-	resp, err := rt.RoundTrip(req)
-	if resp != nil {
-		t.Fatalf("expected nil response, got %#v", resp)
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
-	}
-
-	assertCalls(t, base, u1)
-	assertPolicyCalls(t, pol, 0)
-}
-
-func TestRoundTrip_CanceledByBaseWithResponse_ClosesBodyAndReturnsImmediately(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	respBody := newTrackingBody("should be closed")
-	resp1 := &http.Response{StatusCode: 200, Body: respBody}
-
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {
-				// resp+err: must close body; cancellation rail => return immediately (no failover)
-				{resp: resp1, err: context.Canceled},
-			},
-			// Should not be called.
-			u2: {
-				{resp: httpResp(200, "ok"), err: nil},
-			},
-		},
-	}
-
-	pol, policy := newPolicyRecorder(true)
-
-	rt := mustNewTransport(t, Config{
-		Endpoints:   testEndpoints(u1, u2),
-		Base:        base,
-		RetryPolicy: policy,
-	})
-
-	req := newRPCRequest(t, u1, "eth_blockNumber")
-	resp, err := rt.RoundTrip(req)
-	if resp != nil {
-		t.Fatalf("expected nil response, got %#v", resp)
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
-	}
-
-	assertPolicyCalls(t, pol, 0)
-
-	if !respBody.Closed() {
-		t.Fatalf("expected response body to be closed when resp+err returned from base")
-	}
-	assertCalls(t, base, u1)
-}
-
-func TestRoundTrip_DeadlineExceededDoesNotCountForCooldownByDefault(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {
-				{resp: nil, err: context.DeadlineExceeded},
-				{resp: httpResp(200, "ok"), err: nil},
-			},
-			u2: {
-				{resp: httpResp(200, "unexpected"), err: nil},
-			},
-		},
-	}
-
-	tr := mustNewTransport(t, Config{
-		Endpoints: testEndpoints(u1, u2),
-		Base:      base,
-		Cooldown: CooldownConfig{
-			Threshold: 1,
-			Duration:  time.Hour,
-		},
-	})
-	fixedNow := time.Unix(500, 0)
-	tr.now = func() time.Time { return fixedNow }
-
-	req1 := newRPCRequest(t, u1, "eth_blockNumber")
-	resp, err := tr.RoundTrip(req1)
-	if resp != nil {
-		t.Fatalf("expected nil response, got %#v", resp)
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
-	}
-
-	req2 := newRPCRequest(t, u1, "eth_blockNumber")
-	resp = mustRoundTrip(t, tr, req2)
-	assertStatus(t, resp, 200)
-
-	assertCalls(t, base, u1, u1)
 }
 
 func TestRoundTrip_LiveCooldownSkipsCandidateThatBeginsCoolingBeforeTurn(t *testing.T) {
@@ -1012,12 +635,9 @@ func TestRoundTrip_LiveCooldownNeverRevisitsPassedEndpoint(t *testing.T) {
 		t.Fatalf("expected nil response, got %#v", resp)
 	}
 
-	ae := mustAsAllUpstreamsFailed(t, err)
-	if ae.Attempted != 2 {
-		t.Fatalf("expected Attempted=2, got %d", ae.Attempted)
-	}
-	if ae.SkippedCooldown != 1 {
-		t.Fatalf("expected SkippedCooldown=1, got %d", ae.SkippedCooldown)
+	fe := mustAsFailoverError(t, err)
+	if len(fe.Attempts) != 2 {
+		t.Fatalf("expected 2 no-response attempts, got %d", len(fe.Attempts))
 	}
 
 	want := []string{u1, u3}
@@ -1104,12 +724,12 @@ func TestRoundTrip_CooldownSkipDoesNotConsumeAttemptNumber(t *testing.T) {
 	assertCalls(t, base, u1, u3)
 }
 
-func TestCooldown_TripsAfterNConsecutiveFailoverFailures_SkipsCooledUpstream(t *testing.T) {
+func TestCooldown_TripsAfterNConsecutiveAvailabilityFailures_SkipsCooledUpstream(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 	u2 := "https://u2.test/rpc"
 
-	// Request #1: u1 => 503 (retryable), u2 => 200
-	// Request #2: u1 => 503 (retryable), u2 => 200 (this second failover trips cooldown for u1)
+	// Request #1: u1 => 503, u2 => 200
+	// Request #2: u1 => 503, u2 => 200 (this second availability failure trips cooldown for u1)
 	// Request #3: u1 skipped (cooling), u2 => 200
 	tb1 := newTrackingBody("503-1")
 	tb2 := newTrackingBody("503-2")
@@ -1148,7 +768,7 @@ func TestCooldown_TripsAfterNConsecutiveFailoverFailures_SkipsCooledUpstream(t *
 	mustRoundTripCode(t, tr, makeReq(), 200)
 
 	if !tb1.Closed() || !tb2.Closed() {
-		t.Fatalf("expected retryable 503 bodies to be closed on failover")
+		t.Fatalf("expected triggering 503 bodies to be closed on failover")
 	}
 	assertCalls(t, base, u1, u2, u1, u2, u2)
 }
@@ -1198,7 +818,7 @@ func TestCooldown_ResetsOnSuccess(t *testing.T) {
 	mustRoundTripCode(t, tr, makeReq(), 200)
 
 	if !tbFail1.Closed() || !tbFail2.Closed() {
-		t.Fatalf("expected retryable 503 bodies to be closed on failover")
+		t.Fatalf("expected triggering 503 bodies to be closed on failover")
 	}
 	assertCalls(t, base, u1, u2, u1, u1, u2)
 }
@@ -1233,9 +853,9 @@ func TestCooldown_AllCandidatesCooling_ReturnsErrNoUsableEndpoint(t *testing.T) 
 	if !errors.Is(err, ErrNoUsableEndpoint) {
 		t.Fatalf("expected ErrNoUsableEndpoint, got %v", err)
 	}
-	var ae *AllUpstreamsFailedError
-	if errors.As(err, &ae) {
-		t.Fatalf("expected direct zero-attempt error, got aggregate: %#v", ae)
+	var fe *FailoverError
+	if errors.As(err, &fe) {
+		t.Fatalf("expected direct zero-attempt error, got FailoverError: %#v", fe)
 	}
 	assertCalls(t, base)
 }
@@ -1356,71 +976,6 @@ func TestRoundTrip_UsesCompleteEndpointDestinationAndPreservesHost(t *testing.T)
 	t.Cleanup(func() { resp.Body.Close() })
 
 	assertStatus(t, resp, 200)
-}
-
-func TestRoundTrip_AllUpstreamsFailedError_CollectsFailuresAndUnwrapsCause(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	tb1 := newTrackingBody("503")
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {
-				{resp: &http.Response{StatusCode: 503, Body: tb1}, err: nil},
-			},
-			u2: {
-				{resp: nil, err: io.EOF},
-			},
-		},
-	}
-
-	tr := mustNewTransport(t, Config{
-		Endpoints: testEndpoints(u1, u2),
-		Base:      base,
-	})
-
-	req := newRPCRequest(t, u1, "eth_blockNumber")
-	req = req.WithContext(WithFailoverAllowed(req.Context()))
-	resp, err := tr.RoundTrip(req)
-	if resp != nil {
-		t.Fatalf("expected nil response, got %#v", resp)
-	}
-
-	ae := mustAsAllUpstreamsFailed(t, err)
-	if ae.Attempted != 2 {
-		t.Fatalf("expected Attempted=2, got %d", ae.Attempted)
-	}
-	if len(ae.Failures) != 2 {
-		t.Fatalf("expected 2 failures, got %d: %#v", len(ae.Failures), ae.Failures)
-	}
-
-	f0 := ae.Failures[0]
-	if f0.StatusCode != 503 {
-		t.Fatalf("expected first failure status 503, got %d", f0.StatusCode)
-	}
-	if f0.Err == nil {
-		t.Fatalf("expected first failure Err to be non nil (synthesized status cause)")
-	}
-	if !f0.Retryable {
-		t.Fatalf("expected first failure Retryable=true (continued after 503)")
-	}
-	if !tb1.Closed() {
-		t.Fatalf("expected 503 response body closed on failover")
-	}
-
-	f1 := ae.Failures[1]
-	if !errors.Is(f1.Err, io.EOF) {
-		t.Fatalf("expected second failure Err to be or unwrap to io.EOF, got %v", f1.Err)
-	}
-	if f1.Retryable {
-		t.Fatalf("expected second failure Retryable=false (no further upstream)")
-	}
-
-	if !errors.Is(err, io.EOF) {
-		t.Fatalf("expected aggregate error to unwrap to io.EOF, got %v", err)
-	}
-
-	assertCalls(t, base, u1, u2)
 }
 
 func TestRoundTrip_PreservesNilBodyWhenOriginalBodyNilAndEmpty(t *testing.T) {

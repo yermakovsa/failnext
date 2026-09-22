@@ -119,9 +119,9 @@ func TestRoundTrip_PreferredEndpointDoesNotGrantFailoverPermission(t *testing.T)
 	if err == nil {
 		t.Fatal("expected terminal error when permission denies continuation")
 	}
-	ae := mustAsAllUpstreamsFailed(t, err)
-	if ae.Attempted != 1 {
-		t.Fatalf("expected Attempted=1, got %d", ae.Attempted)
+	fe := mustAsFailoverError(t, err)
+	if len(fe.Attempts) != 1 {
+		t.Fatalf("expected 1 no-response attempt, got %d", len(fe.Attempts))
 	}
 	assertCalls(t, base, u3)
 }
@@ -160,9 +160,9 @@ func TestRoundTrip_PreferenceAndEligibilityDoNotGrantReplayability(t *testing.T)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %#v", resp)
 	}
-	ae := mustAsAllUpstreamsFailed(t, err)
-	if ae.Attempted != 1 {
-		t.Fatalf("expected Attempted=1, got %d", ae.Attempted)
+	fe := mustAsFailoverError(t, err)
+	if len(fe.Attempts) != 1 {
+		t.Fatalf("expected 1 no-response attempt, got %d", len(fe.Attempts))
 	}
 	assertCalls(t, base, u3)
 }

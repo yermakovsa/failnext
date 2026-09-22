@@ -55,14 +55,11 @@ func main() {
 		return
 	}
 
-	var ae *rcpx.AllUpstreamsFailedError
-	if errors.As(err, &ae) {
-		fmt.Printf("attempted=%d skippedCooldown=%d failures=%d\n",
-			ae.Attempted, ae.SkippedCooldown, len(ae.Failures))
-
-		for i, f := range ae.Failures {
-			fmt.Printf("  #%d upstream=%s status=%d retryable=%v err=%v\n",
-				i+1, f.Upstream, f.StatusCode, f.Retryable, f.Err)
+	var fe *rcpx.FailoverError
+	if errors.As(err, &fe) {
+		fmt.Printf("attempts=%d\n", len(fe.Attempts))
+		for i, attempt := range fe.Attempts {
+			fmt.Printf("  #%d endpoint=%s err=%v\n", i+1, attempt.Endpoint, attempt.Err)
 		}
 		return
 	}

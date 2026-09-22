@@ -12,7 +12,7 @@ type cooldownTracker struct {
 	duration  time.Duration
 
 	mu        sync.Mutex
-	consec    []int       // consecutive failover-causing failures
+	consec    []int       // consecutive rcpx-defined availability failures
 	coolingTo []time.Time // if now is before coolingTo[i], endpoint i is cooling down
 }
 
@@ -50,28 +50,20 @@ func (c *cooldownTracker) eligible(now time.Time, idx int) bool {
 	defer c.mu.Unlock()
 
 	until := c.coolingTo[idx]
-	return until.IsZero() || !now.Before(until)
-}
-
-func (c *cooldownTracker) recordSuccess(idx int) {
-	if c == nil || !c.enabled {
-		return
+	if until.IsZero() {
+		return true
 	}
-	if !c.validIndex(idx) {
-		return
+	if now.Before(until) {
+		return false
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.consec[idx] = 0
+	// Cooldown expiry is observed lazily at admission. A new streak starts fresh.
 	c.coolingTo[idx] = time.Time{}
+	c.consec[idx] = 0
+	return true
 }
 
-// recordFailoverFailure records a failure for endpoint idx that caused rcpx to
-// try another endpoint. When consecutive failures reach the configured
-// threshold, the endpoint cools down for the configured duration.
-func (c *cooldownTracker) recordFailoverFailure(now time.Time, idx int) {
+func (c *cooldownTracker) recordNonFailure(idx int) {
 	if c == nil || !c.enabled {
 		return
 	}
@@ -82,9 +74,35 @@ func (c *cooldownTracker) recordFailoverFailure(now time.Time, idx int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Don't count failures during cooldown; we shouldn't be attempting them.
-	if until := c.coolingTo[idx]; !until.IsZero() && now.Before(until) {
+	// A non-failure response interrupts the failure streak, but an already-active
+	// fixed-duration cooldown remains in force until its admission-time expiry.
+	c.consec[idx] = 0
+}
+
+// recordFailure records one rcpx-defined availability failure. An attempt that
+// was admitted before a concurrent cooldown transition may finish while the
+// endpoint is already cooling; its evidence is recorded without extending the
+// active fixed-duration cooldown.
+func (c *cooldownTracker) recordFailure(now time.Time, idx int) {
+	if c == nil || !c.enabled {
 		return
+	}
+	if !c.validIndex(idx) {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if until := c.coolingTo[idx]; !until.IsZero() {
+		if now.Before(until) {
+			c.consec[idx]++
+			return
+		}
+
+		// The previous cooldown has expired. Start new evidence from a fresh streak.
+		c.coolingTo[idx] = time.Time{}
+		c.consec[idx] = 0
 	}
 
 	c.consec[idx]++
@@ -94,5 +112,14 @@ func (c *cooldownTracker) recordFailoverFailure(now time.Time, idx int) {
 	if c.consec[idx] >= c.threshold {
 		c.consec[idx] = 0
 		c.coolingTo[idx] = now.Add(c.duration)
+	}
+}
+
+func isCooldownFailureStatus(code int) bool {
+	switch code {
+	case 502, 503, 504:
+		return true
+	default:
+		return false
 	}
 }

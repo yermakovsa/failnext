@@ -17,7 +17,7 @@ func ExampleNew_failover() {
 	var hits1 atomic.Int32
 	var hits2 atomic.Int32
 
-	// Upstream #1: always returns a retryable HTTP 503.
+	// Upstream #1: always returns a failover-triggering HTTP 503.
 	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits1.Add(1)
 		w.Header().Set("Content-Type", "text/plain")
@@ -69,58 +69,55 @@ func ExampleNew_failover() {
 	// server1=1 server2=1 result=0x1
 }
 
-func ExampleAllUpstreamsFailedError() {
-	var hits1 atomic.Int32
-	var hits2 atomic.Int32
-
-	// Both upstreams return retryable 503, so the request will exhaust all upstreams.
-	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits1.Add(1)
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer srv1.Close()
-
-	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits2.Add(1)
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer srv2.Close()
+func ExampleFailoverError() {
+	errPrimary := errors.New("primary transport failure")
+	errBackup := errors.New("backup transport failure")
 
 	rt, err := rcpx.New(rcpx.Config{
 		Endpoints: []rcpx.Endpoint{
-			{ID: "primary", URL: srv1.URL},
-			{ID: "backup", URL: srv2.URL},
+			{ID: "primary", URL: "https://primary.example/rpc"},
+			{ID: "backup", URL: "https://backup.example/rpc"},
 		},
+		Base: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Host {
+			case "primary.example":
+				return nil, errPrimary
+			case "backup.example":
+				return nil, errBackup
+			default:
+				return nil, fmt.Errorf("unexpected destination %s", req.URL)
+			}
+		}),
 	})
 	if err != nil {
 		panic(err)
 	}
 
-	httpClient := &http.Client{Transport: rt}
-
-	ctx := rcpx.WithFailoverAllowed(context.Background())
-	req := jsonRPCRequest(ctx, srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
-	_, err = httpClient.Do(req)
-	if err == nil {
-		panic("expected error")
+	req, err := http.NewRequest(http.MethodGet, "https://logical.example/rpc", nil)
+	if err != nil {
+		panic(err)
 	}
+	_, err = rt.RoundTrip(req)
 
-	var ae *rcpx.AllUpstreamsFailedError
-	if !errors.As(err, &ae) {
-		panic("unexpected error type")
+	var fe *rcpx.FailoverError
+	if !errors.As(err, &fe) {
+		panic("expected FailoverError")
 	}
-	fmt.Printf("attempted=%d skippedCooldown=%d failures=%d\n", ae.Attempted, ae.SkippedCooldown, len(ae.Failures))
-	fmt.Printf("server1=%d server2=%d\n", hits1.Load(), hits2.Load())
+	fmt.Printf("attempts=%d first=%s last=%s final-is-backup=%v\n",
+		len(fe.Attempts),
+		fe.Attempts[0].Endpoint,
+		fe.Attempts[1].Endpoint,
+		errors.Is(err, errBackup),
+	)
 	// Output:
-	// attempted=2 skippedCooldown=0 failures=2
-	// server1=1 server2=1
+	// attempts=2 first=primary last=backup final-is-backup=true
 }
 
 func ExampleWithFailoverAllowed() {
 	var hits1 atomic.Int32
 	var hits2 atomic.Int32
 
-	// Upstream #1 fails in a retryable way.
+	// Upstream #1 returns a failover-triggering 503.
 	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits1.Add(1)
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -172,7 +169,7 @@ func ExampleNew_cooldownDisabled() {
 	var hits1 atomic.Int32
 	var hits2 atomic.Int32
 
-	// Upstream #1: always returns a retryable HTTP 503.
+	// Upstream #1: always returns a failover-triggering HTTP 503.
 	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits1.Add(1)
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -224,63 +221,6 @@ func ExampleNew_cooldownDisabled() {
 	// server1=2 server2=2
 }
 
-func ExampleNew_customRetryPolicy() {
-	var hits1 atomic.Int32
-	var hits2 atomic.Int32
-	var policyCalls atomic.Int32
-
-	// Upstream #1: retryable failure (503).
-	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits1.Add(1)
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer srv1.Close()
-
-	// Upstream #2: would succeed, but policy will prevent failover.
-	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits2.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`))
-	}))
-	defer srv2.Close()
-
-	rt, err := rcpx.New(rcpx.Config{
-		Endpoints: []rcpx.Endpoint{
-			{ID: "primary", URL: srv1.URL},
-			{ID: "backup", URL: srv2.URL},
-		},
-		RetryPolicy: func(out rcpx.AttemptOutcome) bool {
-			policyCalls.Add(1)
-			return false // stop after the first failure
-		},
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	httpClient := &http.Client{Transport: rt}
-
-	ctx := rcpx.WithFailoverAllowed(context.Background())
-	req := jsonRPCRequest(ctx, srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
-
-	_, err = httpClient.Do(req)
-	if err == nil {
-		panic("expected error")
-	}
-
-	var ae *rcpx.AllUpstreamsFailedError
-	if !errors.As(err, &ae) {
-		panic("expected AllUpstreamsFailedError")
-	}
-
-	fmt.Printf("policyCalls=%d attempted=%d server1=%d server2=%d\n",
-		policyCalls.Load(), ae.Attempted, hits1.Load(), hits2.Load(),
-	)
-
-	// Output:
-	// policyCalls=1 attempted=1 server1=1 server2=0
-}
-
 func jsonRPCRequest(ctx context.Context, url, body string) *http.Request {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBufferString(body))
 	if err != nil {
@@ -288,4 +228,10 @@ func jsonRPCRequest(ctx context.Context, url, body string) *http.Request {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	return req
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }

@@ -24,11 +24,11 @@ func main() {
 		{ID: "backup", URL: "http://127.0.0.1:65533"},
 	}
 
-	fmt.Println("== AllUpstreamsFailedError (exhaust all upstreams) ==")
-	demoAllUpstreamsFailed(timeout, endpoints)
+	fmt.Println("== FailoverError (no HTTP response available) ==")
+	demoFailoverError(timeout, endpoints)
 }
 
-func demoAllUpstreamsFailed(timeout time.Duration, endpoints []rcpx.Endpoint) {
+func demoFailoverError(timeout time.Duration, endpoints []rcpx.Endpoint) {
 	rpcClient, err := dialRPC(timeout, endpoints)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "setup: %v\n", err)
@@ -47,18 +47,15 @@ func demoAllUpstreamsFailed(timeout time.Duration, endpoints []rcpx.Endpoint) {
 		return
 	}
 
-	var ae *rcpx.AllUpstreamsFailedError
-	if !errors.As(err, &ae) {
+	var fe *rcpx.FailoverError
+	if !errors.As(err, &fe) {
 		fmt.Printf("unexpected error type: %T: %v\n", err, err)
 		return
 	}
 
-	fmt.Printf("attempted=%d skippedCooldown=%d failures=%d\n",
-		ae.Attempted, ae.SkippedCooldown, len(ae.Failures))
-
-	for i, f := range ae.Failures {
-		fmt.Printf("  #%d upstream=%s status=%d retryable=%v err=%v\n",
-			i+1, f.Upstream, f.StatusCode, f.Retryable, f.Err)
+	fmt.Printf("attempts=%d\n", len(fe.Attempts))
+	for i, attempt := range fe.Attempts {
+		fmt.Printf("  #%d endpoint=%s err=%v\n", i+1, attempt.Endpoint, attempt.Err)
 	}
 
 	fmt.Printf("errors.Is(ErrNoUsableEndpoint)=%v errors.Is(context.Canceled)=%v\n",

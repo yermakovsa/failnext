@@ -15,51 +15,34 @@ var (
 	ErrUnknownEndpoint = errors.New("rcpx: unknown endpoint")
 )
 
-// AllUpstreamsFailedError is returned when one or more upstream attempts were
-// made and no attempt succeeded.
-type AllUpstreamsFailedError struct {
-	Attempted       int
-	SkippedCooldown int
-
-	// Failures are recorded in attempt order (one per attempt; bounded).
-	Failures []AttemptFailure
+// AttemptError records one physical attempt that failed to obtain an HTTP response.
+type AttemptError struct {
+	Endpoint EndpointID
+	Err      error
 }
 
-func (e *AllUpstreamsFailedError) Error() string {
+// FailoverError reports a logical request that has no HTTP response available
+// after one or more physical no-response attempts.
+type FailoverError struct {
+	Attempts []AttemptError
+
+	cause error
+}
+
+func (e *FailoverError) Error() string {
 	if e == nil {
-		return "rcpx: all upstreams failed"
+		return "rcpx: failover failed without HTTP response"
 	}
-
-	cause := e.Unwrap()
-	if cause == nil {
-		return fmt.Sprintf("rcpx: all upstreams failed (attempted=%d)", e.Attempted)
+	if e.cause == nil {
+		return fmt.Sprintf("rcpx: failover failed without HTTP response (attempts=%d)", len(e.Attempts))
 	}
-	return fmt.Sprintf("rcpx: all upstreams failed (attempted=%d): %v", e.Attempted, cause)
+	return fmt.Sprintf("rcpx: failover failed without HTTP response (attempts=%d): %v", len(e.Attempts), e.cause)
 }
 
-// Unwrap returns the last failure cause, if any.
-func (e *AllUpstreamsFailedError) Unwrap() error {
+// Unwrap returns the terminal cause.
+func (e *FailoverError) Unwrap() error {
 	if e == nil {
 		return nil
 	}
-
-	for i := len(e.Failures) - 1; i >= 0; i-- {
-		if err := e.Failures[i].Err; err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// AttemptFailure records a failed attempt.
-type AttemptFailure struct {
-	Upstream string
-
-	// Method and Batch are retained temporarily for the legacy error surface.
-	Method string
-	Batch  bool
-
-	StatusCode int
-	Err        error
-	Retryable  bool // whether rcpx continued after this attempt
+	return e.cause
 }
