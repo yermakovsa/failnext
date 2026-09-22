@@ -49,11 +49,6 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-type policyRecorder struct {
-	calls int
-	ret   bool
-}
-
 func (s *scriptRT) RoundTrip(req *http.Request) (*http.Response, error) {
 	s.mu.Lock()
 	s.calls = append(s.calls, req.URL.String())
@@ -87,14 +82,6 @@ func (s *scriptRT) Calls() []string {
 
 func newTrackingBody(s string) *trackingBody {
 	return &trackingBody{r: strings.NewReader(s)}
-}
-
-func newPolicyRecorder(ret bool) (*policyRecorder, func(AttemptOutcome) bool) {
-	pr := &policyRecorder{ret: ret}
-	return pr, func(out AttemptOutcome) bool {
-		pr.calls++
-		return pr.ret
-	}
 }
 
 func newRPCRequest(t *testing.T, url, method string) *http.Request {
@@ -178,14 +165,6 @@ func assertCalls(t *testing.T, base *scriptRT, want ...string) {
 	}
 }
 
-func assertPolicyCalls(t *testing.T, pr *policyRecorder, want int) {
-	t.Helper()
-
-	if pr.calls != want {
-		t.Fatalf("unexpected policy call count: got=%d want=%d", pr.calls, want)
-	}
-}
-
 // Must helpers
 
 func mustRoundTrip(t *testing.T, rt http.RoundTripper, req *http.Request) *http.Response {
@@ -214,12 +193,12 @@ func mustRoundTripCode(t *testing.T, rt http.RoundTripper, req *http.Request, wa
 	resp.Body.Close()
 }
 
-func mustAsAllUpstreamsFailed(t *testing.T, err error) *AllUpstreamsFailedError {
+func mustAsFailoverError(t *testing.T, err error) *FailoverError {
 	t.Helper()
 
-	var ae *AllUpstreamsFailedError
-	if !errors.As(err, &ae) {
-		t.Fatalf("expected AllUpstreamsFailedError, got %v", err)
+	var fe *FailoverError
+	if !errors.As(err, &fe) {
+		t.Fatalf("expected FailoverError, got %v", err)
 	}
-	return ae
+	return fe
 }

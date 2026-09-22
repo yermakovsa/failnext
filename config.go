@@ -39,16 +39,12 @@ type Config struct {
 	// be called concurrently for different requests and should return promptly.
 	Eligible func(EndpointID) bool
 
-	// Cooldown behavior after consecutive retryable failures. The zero value
+	// Cooldown behavior after consecutive qualifying failures. The zero value
 	// enables cooldown with defaults.
 	Cooldown CooldownConfig
 
-	// Retry/failover trigger-policy hook. If nil, the default policy is used.
-	// This temporary surface
-	RetryPolicy RetryPolicy
-
 	// AdditionalTriggerStatusCodes are additional three-digit HTTP status codes
-	// that trigger the existing failover machinery.
+	// that trigger failover consideration.
 	AdditionalTriggerStatusCodes []int
 
 	// OnAttempt, if non-nil, is called after each upstream attempt with basic
@@ -119,10 +115,9 @@ type resolvedConfig struct {
 	eligible         func(EndpointID) bool
 	cooldown         effectiveCooldown
 
-	policy    RetryPolicy
 	onAttempt func(AttemptInfo)
 
-	retryableStatuses map[int]struct{}
+	triggerStatuses map[int]struct{}
 }
 
 func resolveConfig(cfg Config) (resolvedConfig, error) {
@@ -177,11 +172,6 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 		return resolvedConfig{}, err
 	}
 
-	policy := cfg.RetryPolicy
-	if policy == nil {
-		policy = defaultRetryPolicy
-	}
-
 	statuses, err := resolveTriggerStatusCodes(cfg.AdditionalTriggerStatusCodes)
 	if err != nil {
 		return resolvedConfig{}, err
@@ -194,10 +184,9 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 		permissionPolicy: cfg.PermissionPolicy,
 		eligible:         cfg.Eligible,
 		cooldown:         cooldown,
-		policy:           policy,
 		onAttempt:        cfg.OnAttempt,
 
-		retryableStatuses: statuses,
+		triggerStatuses: statuses,
 	}, nil
 }
 
@@ -233,10 +222,7 @@ func resolveCooldown(cc CooldownConfig) (effectiveCooldown, error) {
 }
 
 func resolveTriggerStatusCodes(additional []int) (map[int]struct{}, error) {
-	// Preserve the existing runtime trigger set in this issue. Final v1 trigger
-	// semantics, including 429, are owned by a later issue.
 	statuses := map[int]struct{}{
-		429: {},
 		502: {},
 		503: {},
 		504: {},
@@ -250,6 +236,11 @@ func resolveTriggerStatusCodes(additional []int) (map[int]struct{}, error) {
 	}
 
 	return statuses, nil
+}
+
+func (cfg resolvedConfig) isTriggerStatus(code int) bool {
+	_, ok := cfg.triggerStatuses[code]
+	return ok
 }
 
 func validHTTPStatusCode(code int) bool {

@@ -251,10 +251,10 @@ func TestNewCopiesAdditionalTriggerStatusCodes(t *testing.T) {
 
 	additional[0] = 501
 
-	if _, ok := tr.cfg.retryableStatuses[500]; !ok {
+	if _, ok := tr.cfg.triggerStatuses[500]; !ok {
 		t.Fatal("expected normalized trigger status 500")
 	}
-	if _, ok := tr.cfg.retryableStatuses[501]; ok {
+	if _, ok := tr.cfg.triggerStatuses[501]; ok {
 		t.Fatal("caller mutation changed normalized trigger statuses")
 	}
 }
@@ -338,7 +338,7 @@ func TestNewAdditionalTriggerStatusCodes(t *testing.T) {
 			AdditionalTriggerStatusCodes: []int{500},
 		})
 
-		if _, ok := tr.cfg.retryableStatuses[500]; !ok {
+		if _, ok := tr.cfg.triggerStatuses[500]; !ok {
 			t.Fatal("expected normalized trigger status 500")
 		}
 	})
@@ -349,7 +349,7 @@ func TestNewAdditionalTriggerStatusCodes(t *testing.T) {
 			AdditionalTriggerStatusCodes: []int{500, 500},
 		})
 
-		if _, ok := tr.cfg.retryableStatuses[500]; !ok {
+		if _, ok := tr.cfg.triggerStatuses[500]; !ok {
 			t.Fatal("expected normalized trigger status 500")
 		}
 	})

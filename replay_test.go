@@ -179,9 +179,9 @@ func TestRoundTrip_MissingGetBodyPreventsLaterAttempt(t *testing.T) {
 	if resp != nil {
 		t.Fatalf("expected nil response, got %#v", resp)
 	}
-	ae := mustAsAllUpstreamsFailed(t, err)
-	if ae.Attempted != 1 {
-		t.Fatalf("expected Attempted=1, got %d", ae.Attempted)
+	fe := mustAsFailoverError(t, err)
+	if len(fe.Attempts) != 1 {
+		t.Fatalf("expected 1 no-response attempt, got %d", len(fe.Attempts))
 	}
 	assertCalls(t, base, u1)
 }
@@ -270,50 +270,9 @@ func TestRoundTrip_ReplayabilityDoesNotGrantPermission(t *testing.T) {
 	if resp != nil {
 		t.Fatalf("expected nil response, got %#v", resp)
 	}
-	mustAsAllUpstreamsFailed(t, err)
+	mustAsFailoverError(t, err)
 	if getBodyCalls != 0 {
 		t.Fatalf("expected GetBody not to be called when permission denies continuation, got %d calls", getBodyCalls)
-	}
-	assertCalls(t, base, u1)
-}
-
-func TestRoundTrip_RetryPolicyStopDoesNotCallGetBody(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	base := &scriptRT{
-		results: map[string][]rtResult{
-			u1: {{err: io.EOF}},
-			u2: {{resp: httpResp(http.StatusOK, "ok")}},
-		},
-	}
-	policy, retryPolicy := newPolicyRecorder(false)
-	rt := mustNewTransport(t, Config{
-		Endpoints:   testEndpoints(u1, u2),
-		Base:        base,
-		RetryPolicy: retryPolicy,
-	})
-
-	req, err := http.NewRequest(http.MethodPost, u1, strings.NewReader("replayable"))
-	if err != nil {
-		t.Fatalf("http.NewRequest: %v", err)
-	}
-	getBodyCalls := 0
-	getBody := req.GetBody
-	req.GetBody = func() (io.ReadCloser, error) {
-		getBodyCalls++
-		return getBody()
-	}
-	req = req.WithContext(WithFailoverAllowed(req.Context()))
-
-	resp, err := rt.RoundTrip(req)
-	if resp != nil {
-		t.Fatalf("expected nil response, got %#v", resp)
-	}
-	mustAsAllUpstreamsFailed(t, err)
-	assertPolicyCalls(t, policy, 1)
-	if getBodyCalls != 0 {
-		t.Fatalf("expected GetBody not to be called when RetryPolicy stops continuation, got %d calls", getBodyCalls)
 	}
 	assertCalls(t, base, u1)
 }

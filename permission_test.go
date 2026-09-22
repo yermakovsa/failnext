@@ -83,9 +83,9 @@ func TestRoundTrip_ExplicitPermissionControlsContinuation(t *testing.T) {
 			if resp != nil {
 				t.Fatalf("expected nil response, got %#v", resp)
 			}
-			ae := mustAsAllUpstreamsFailed(t, err)
-			if ae.Attempted != 1 {
-				t.Fatalf("expected Attempted=1, got %d", ae.Attempted)
+			fe := mustAsFailoverError(t, err)
+			if len(fe.Attempts) != 1 {
+				t.Fatalf("expected 1 no-response attempt, got %d", len(fe.Attempts))
 			}
 			assertCalls(t, base, u1)
 		})
@@ -157,7 +157,7 @@ func TestRoundTrip_ExplicitPermissionBypassesPolicy(t *testing.T) {
 			if resp != nil {
 				t.Fatalf("expected nil response, got %#v", resp)
 			}
-			mustAsAllUpstreamsFailed(t, err)
+			mustAsFailoverError(t, err)
 			assertCalls(t, base, u1)
 		})
 	}
@@ -241,7 +241,7 @@ func TestRoundTrip_PermissionPolicyAuthority(t *testing.T) {
 			if resp != nil {
 				t.Fatalf("expected nil response, got %#v", resp)
 			}
-			mustAsAllUpstreamsFailed(t, err)
+			mustAsFailoverError(t, err)
 			assertCalls(t, base, u1)
 		})
 	}
@@ -290,7 +290,7 @@ func TestRoundTrip_BuiltInPermissionInference(t *testing.T) {
 			if resp != nil {
 				t.Fatalf("expected nil response, got %#v", resp)
 			}
-			mustAsAllUpstreamsFailed(t, err)
+			mustAsFailoverError(t, err)
 			assertCalls(t, base, u1)
 		})
 	}
