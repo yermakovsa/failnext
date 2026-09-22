@@ -197,13 +197,9 @@ func TestRoundTrip_GetBodyErrorPreventsProspectiveAttempt(t *testing.T) {
 			u2: {{resp: httpResp(http.StatusOK, "ok")}},
 		},
 	}
-	var attempts []AttemptInfo
 	rt := mustNewTransport(t, Config{
 		Endpoints: testEndpoints(u1, u2),
 		Base:      base,
-		OnAttempt: func(info AttemptInfo) {
-			attempts = append(attempts, info)
-		},
 	})
 
 	req, err := http.NewRequest(http.MethodPost, u1, newTrackingBody("original"))
@@ -228,13 +224,6 @@ func TestRoundTrip_GetBodyErrorPreventsProspectiveAttempt(t *testing.T) {
 		t.Fatalf("expected GetBody calls=1, got %d", getBodyCalls)
 	}
 	assertCalls(t, base, u1)
-
-	if len(attempts) != 1 {
-		t.Fatalf("expected one physical attempt observation, got %d: %#v", len(attempts), attempts)
-	}
-	if attempts[0].Attempt != 1 || attempts[0].Upstream != u1 || !attempts[0].Final {
-		t.Fatalf("unexpected attempt observation: %#v", attempts[0])
-	}
 }
 
 func TestRoundTrip_ReplayabilityDoesNotGrantPermission(t *testing.T) {

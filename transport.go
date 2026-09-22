@@ -121,30 +121,44 @@ func (t *Transport) considerationOrder(ctx context.Context) ([]int, error) {
 	return order, nil
 }
 
-func (t *Transport) nextAdmittedCandidate(order []int, start int) (idx int, next int, skipped int, ok bool) {
+func (t *Transport) nextAdmittedCandidate(ctx context.Context, order []int, start int) (idx int, next int, ok bool) {
 	for pos := start; pos < len(order); pos++ {
 		idx := order[pos]
 		now := t.now()
 		if t.cooldown == nil || t.cooldown.eligible(now, idx) {
-			return idx, pos + 1, skipped, true
+			return idx, pos + 1, true
 		}
-		skipped++
+
+		t.notifyEvent(ctx, Event{
+			Kind:     EventCooldownSkip,
+			Endpoint: t.cfg.endpoints[idx].id,
+		})
+		if ctx.Err() != nil {
+			return 0, pos + 1, false
+		}
 	}
-	return 0, len(order), skipped, false
+	return 0, len(order), false
 }
 
-func (t *Transport) notifyAttempt(attempt int, upstream string, statusCode int, err error, final bool) {
-	if t.cfg.onAttempt == nil {
+func (t *Transport) notifyEvent(ctx context.Context, event Event) {
+	if t.cfg.onEvent == nil {
 		return
 	}
 
-	t.cfg.onAttempt(AttemptInfo{
-		Attempt:    attempt,
-		Upstream:   upstream,
-		StatusCode: statusCode,
-		Err:        err,
-		Final:      final,
-	})
+	t.cfg.onEvent(ctx, event)
+}
+
+func (t *Transport) notifyResult(ctx context.Context, endpoint EndpointID, resp *http.Response, err error) {
+	event := Event{
+		Kind: EventResult,
+		Err:  err,
+	}
+	if resp != nil && err == nil {
+		event.Endpoint = endpoint
+		event.StatusCode = resp.StatusCode
+	}
+
+	t.notifyEvent(ctx, event)
 }
 
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -160,18 +174,23 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}()
 
-	if err := ctx.Err(); err != nil {
+	returnError := func(err error) (*http.Response, error) {
+		t.notifyResult(ctx, "", nil, err)
 		return nil, err
+	}
+
+	if err := ctx.Err(); err != nil {
+		return returnError(err)
 	}
 
 	permission := resolvePermission(req, t.cfg.permissionPolicy)
 
 	considerationOrder, err := t.considerationOrder(ctx)
 	if err != nil {
-		return nil, err
+		return returnError(err)
 	}
 	if len(considerationOrder) == 0 {
-		return nil, ErrNoUsableEndpoint
+		return returnError(ErrNoUsableEndpoint)
 	}
 
 	attempts := make([]AttemptError, 0, len(considerationOrder))
@@ -186,48 +205,78 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}()
 
 	var retainedResp *http.Response
+	var retainedEndpoint EndpointID
 	closeRetained := func() {
 		if retainedResp != nil {
 			closeResponseBody(retainedResp)
 			retainedResp = nil
+			retainedEndpoint = ""
 		}
 	}
 	defer closeRetained()
 
-	retainResponse := func(resp *http.Response) {
+	retainResponse := func(endpoint EndpointID, resp *http.Response) {
 		if retainedResp != nil && retainedResp != resp {
 			closeResponseBody(retainedResp)
 		}
 		retainedResp = resp
+		retainedEndpoint = endpoint
 	}
+
+	var attemptResp *http.Response
+	closeAttemptResp := func() {
+		if attemptResp == nil {
+			return
+		}
+		if attemptResp != retainedResp {
+			closeResponseBody(attemptResp)
+		}
+		attemptResp = nil
+	}
+	defer closeAttemptResp()
+
+	returnAttemptResponse := func(endpoint EndpointID) (*http.Response, error) {
+		resp := attemptResp
+		t.notifyResult(ctx, endpoint, resp, nil)
+		attemptResp = nil
+		return resp, nil
+	}
+
+	returnRetainedResponse := func() (*http.Response, error) {
+		resp := retainedResp
+		endpoint := retainedEndpoint
+		t.notifyResult(ctx, endpoint, resp, nil)
+		retainedResp = nil
+		retainedEndpoint = ""
+		return resp, nil
+	}
+
 	terminalResult := func(cause error) (*http.Response, error) {
 		if err := ctx.Err(); err != nil {
 			closeRetained()
-			return nil, err
+			return returnError(err)
 		}
 		if retainedResp != nil {
-			resp := retainedResp
-			retainedResp = nil
-			return resp, nil
+			return returnRetainedResponse()
 		}
-		return nil, &FailoverError{
+		return returnError(&FailoverError{
 			Attempts: attempts,
 			cause:    cause,
-		}
+		})
 	}
 
-	idx, nextPos, _, ok := t.nextAdmittedCandidate(considerationOrder, 0)
+	idx, nextPos, ok := t.nextAdmittedCandidate(ctx, considerationOrder, 0)
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return returnError(err)
 	}
 	if !ok {
-		return nil, ErrNoUsableEndpoint
+		return returnError(ErrNoUsableEndpoint)
 	}
 
 	for {
 		if err := ctx.Err(); err != nil {
 			closeRetained()
-			return nil, err
+			return returnError(err)
 		}
 
 		attemptNo++
@@ -242,22 +291,27 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		resp, rerr := t.cfg.base.RoundTrip(areq)
 		resp, rerr = normalizeBaseRoundTrip(resp, rerr, endpoint.raw)
+		attemptResp = resp
+
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.notifyEvent(ctx, Event{
+			Kind:       EventAttempt,
+			Endpoint:   endpoint.id,
+			Attempt:    attemptNo,
+			StatusCode: status,
+			Err:        rerr,
+		})
 
 		// The logical request context is authoritative for cancellation. A base
 		// error shaped like context.Canceled or context.DeadlineExceeded remains an
 		// ordinary transport failure while this context is still live.
 		if err := ctx.Err(); err != nil {
-			if resp != retainedResp {
-				closeResponseBody(resp)
-			}
+			closeAttemptResp()
 			closeRetained()
-			t.notifyAttempt(attemptNo, endpoint.raw, 0, err, true)
-			return nil, err
-		}
-
-		status := 0
-		if resp != nil {
-			status = resp.StatusCode
+			return returnError(err)
 		}
 
 		// Cooldown evidence is classified from the physical outcome before any
@@ -281,23 +335,26 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// retained fallback response is superseded and no longer owned by rcpx.
 		if rerr == nil && !t.cfg.isTriggerStatus(status) {
 			if err := ctx.Err(); err != nil {
-				closeResponseBody(resp)
+				closeAttemptResp()
 				closeRetained()
-				t.notifyAttempt(attemptNo, endpoint.raw, status, err, true)
-				return nil, err
+				return returnError(err)
 			}
-			if retainedResp != nil && retainedResp != resp {
-				closeResponseBody(retainedResp)
+			if retainedResp != nil {
+				if retainedResp == attemptResp {
+					retainedResp = nil
+					retainedEndpoint = ""
+				} else {
+					closeRetained()
+				}
 			}
-			retainedResp = nil
-			t.notifyAttempt(attemptNo, endpoint.raw, status, nil, true)
-			return resp, nil
+			return returnAttemptResponse(endpoint.id)
 		}
 
 		// A failover-trigger HTTP response remains a valid fallback while later
 		// candidates are considered. A newer response supersedes any older one.
 		if resp != nil {
-			retainResponse(resp)
+			retainResponse(endpoint.id, resp)
+			attemptResp = nil
 		}
 
 		cause := rerr
@@ -313,27 +370,28 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if continueToNext {
 			if err := ctx.Err(); err != nil {
 				closeRetained()
-				t.notifyAttempt(attemptNo, endpoint.raw, status, cause, true)
-				return nil, err
+				return returnError(err)
 			}
 
-			nextIdx, afterNext, _, admitted := t.nextAdmittedCandidate(considerationOrder, nextPos)
+			nextIdx, afterNext, admitted := t.nextAdmittedCandidate(ctx, considerationOrder, nextPos)
 			nextPos = afterNext
 
 			if err := ctx.Err(); err != nil {
 				closeRetained()
-				t.notifyAttempt(attemptNo, endpoint.raw, status, cause, true)
-				return nil, err
+				return returnError(err)
 			}
 
 			if admitted {
 				nextBody, replayable, replayErr := replayBodyForNextAttempt(req)
 				if replayErr != nil {
-					t.notifyAttempt(attemptNo, endpoint.raw, status, cause, true)
+					t.notifyEvent(ctx, Event{
+						Kind:     EventReplayError,
+						Endpoint: t.cfg.endpoints[nextIdx].id,
+						Err:      replayErr,
+					})
 					return terminalResult(replayErr)
 				}
 				if !replayable {
-					t.notifyAttempt(attemptNo, endpoint.raw, status, cause, true)
 					return terminalResult(cause)
 				}
 
@@ -343,18 +401,14 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 				if err := ctx.Err(); err != nil {
 					closeRetained()
-					t.notifyAttempt(attemptNo, endpoint.raw, status, cause, true)
-					return nil, err
+					return returnError(err)
 				}
-
-				t.notifyAttempt(attemptNo, endpoint.raw, status, cause, false)
 
 				idx = nextIdx
 				continue
 			}
 		}
 
-		t.notifyAttempt(attemptNo, endpoint.raw, status, cause, true)
 		return terminalResult(cause)
 	}
 }
