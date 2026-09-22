@@ -178,11 +178,6 @@ func TestNewReturnsTransport(t *testing.T) {
 	if tr == nil {
 		t.Fatal("New() returned nil Transport")
 	}
-
-	var rt http.RoundTripper = tr
-	if rt == nil {
-		t.Fatal("*Transport does not satisfy http.RoundTripper")
-	}
 }
 
 func TestNewNormalizesEndpointOrderAndLookup(t *testing.T) {

@@ -397,6 +397,52 @@ func TestRoundTrip_PermissionPolicyMayRunConcurrently(t *testing.T) {
 	}
 }
 
+func TestRoundTrip_PermissionPolicyRunsOutsideCooldownLock(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+
+	var rt *Transport
+	var policyCalls atomic.Int32
+	rt = mustNewTransport(t, Config{
+		Endpoints: testEndpoints(u1),
+		Base: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("ok")),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		}),
+		PermissionPolicy: func(*http.Request) Permission {
+			policyCalls.Add(1)
+			rt.cooldown.eligible(rt.now(), 0)
+			return PermissionAllow
+		},
+	})
+
+	req := newBodylessRequest(t, http.MethodPost, u1)
+	done := make(chan error, 1)
+	go func() {
+		resp, err := rt.RoundTrip(req)
+		if resp != nil {
+			resp.Body.Close()
+		}
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RoundTrip error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("PermissionPolicy appears to run while the cooldown lock is held")
+	}
+
+	if got := policyCalls.Load(); got != 1 {
+		t.Fatalf("expected PermissionPolicy calls=1, got %d", got)
+	}
+}
+
 func TestRoundTrip_JSONRPCMethodNamesDoNotAffectPermission(t *testing.T) {
 	tests := []struct {
 		name string

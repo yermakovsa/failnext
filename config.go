@@ -1,6 +1,7 @@
 package rcpx
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -17,6 +18,27 @@ type Endpoint struct {
 	URL string
 }
 
+// EventKind identifies one kind of rcpx observability event.
+type EventKind uint8
+
+const (
+	EventAttempt EventKind = iota + 1
+	EventCooldownSkip
+	EventReplayError
+	EventResult
+)
+
+// Event describes one observable rcpx event for a logical request.
+type Event struct {
+	Kind EventKind
+
+	Endpoint EndpointID
+	Attempt  int
+
+	StatusCode int
+	Err        error
+}
+
 // Config configures an rcpx RoundTripper.
 //
 // Endpoints define the fixed priority order for physical attempts. Each endpoint
@@ -30,13 +52,17 @@ type Config struct {
 	// PermissionPolicy classifies whether a logical request may continue to
 	// another configured endpoint. It is evaluated at most once per RoundTrip
 	// when no explicit request-scoped permission is present. It may be called
-	// concurrently for different requests and must not mutate the request or
-	// consume, close, or replace Request.Body.
+	// concurrently for different requests and is invoked outside rcpx internal
+	// cooldown/state locks. It must be concurrency-safe if it shares mutable state
+	// and should return promptly. It must not mutate the request or consume, close,
+	// or replace Request.Body.
 	PermissionPolicy func(*http.Request) Permission
 
 	// Eligible reports whether a configured endpoint may participate in a logical
 	// request. If nil, all configured endpoints are externally eligible. It may
-	// be called concurrently for different requests and should return promptly.
+	// be called concurrently for different requests and is invoked outside rcpx
+	// internal cooldown/state locks. It must be concurrency-safe if it shares
+	// mutable state and should return promptly.
 	Eligible func(EndpointID) bool
 
 	// Cooldown behavior after consecutive qualifying failures. The zero value
@@ -47,35 +73,13 @@ type Config struct {
 	// that trigger failover consideration.
 	AdditionalTriggerStatusCodes []int
 
-	// OnAttempt, if non-nil, is called after each upstream attempt with basic
-	// attempt outcome information. The callback is called synchronously.
-	OnAttempt func(AttemptInfo)
-}
-
-// AttemptInfo describes one upstream attempt observed by Config.OnAttempt.
-type AttemptInfo struct {
-	// Attempt is the 1-based attempt number for the current request.
-	Attempt int
-
-	// Upstream is the configured upstream URL attempted.
-	//
-	// It is not redacted and may contain credentials if the configured URL
-	// contains them.
-	Upstream string
-
-	// Method and Batch are retained temporarily for the legacy attempt surface.
-	Method string
-	Batch  bool
-
-	// StatusCode is 0 when no HTTP response was obtained.
-	StatusCode int
-
-	// Err is the attempt failure cause, if any.
-	Err error
-
-	// Final reports whether rcpx will make no further upstream attempts for
-	// this request after this attempt.
-	Final bool
+	// OnEvent, if non-nil, is called synchronously for rcpx observability events.
+	// Events for one logical request are delivered in causal order. Different
+	// logical requests may invoke the callback concurrently, so callbacks that
+	// share mutable state must be concurrency-safe and should return promptly.
+	// OnEvent is invoked outside rcpx internal cooldown/state locks. rcpx does
+	// not recover callback panics.
+	OnEvent func(context.Context, Event)
 }
 
 // CooldownConfig configures passive endpoint cooldown behavior.
@@ -115,7 +119,7 @@ type resolvedConfig struct {
 	eligible         func(EndpointID) bool
 	cooldown         effectiveCooldown
 
-	onAttempt func(AttemptInfo)
+	onEvent func(context.Context, Event)
 
 	triggerStatuses map[int]struct{}
 }
@@ -184,7 +188,7 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 		permissionPolicy: cfg.PermissionPolicy,
 		eligible:         cfg.Eligible,
 		cooldown:         cooldown,
-		onAttempt:        cfg.OnAttempt,
+		onEvent:          cfg.OnEvent,
 
 		triggerStatuses: statuses,
 	}, nil
