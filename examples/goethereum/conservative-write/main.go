@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"net/http"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 
@@ -15,7 +17,6 @@ import (
 )
 
 func main() {
-	// Both endpoints are intentionally unavailable so every attempt fails.
 	endpoints := []rcpx.Endpoint{
 		{ID: "primary", URL: "http://127.0.0.1:65534"},
 		{ID: "backup", URL: "http://127.0.0.1:65533"},
@@ -23,14 +24,9 @@ func main() {
 
 	tr, err := rcpx.New(rcpx.Config{
 		Endpoints: endpoints,
-
 		OnEvent: func(_ context.Context, event rcpx.Event) {
-			if event.Kind == rcpx.EventAttempt && event.Err != nil {
-				fmt.Printf(
-					"attempt %d: %s failed\n",
-					event.Attempt,
-					event.Endpoint,
-				)
+			if event.Kind == rcpx.EventAttempt {
+				fmt.Printf("attempt %d: %s\n", event.Attempt, event.Endpoint)
 			}
 		},
 	})
@@ -55,19 +51,26 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// JSON-RPC reads use POST, so allow this read to try another provider.
-	_, err = eth.BlockNumber(rcpx.WithFailoverAllowed(ctx))
+	// The parent context allows failover.
+	allowedCtx := rcpx.WithFailoverAllowed(ctx)
+
+	// Disable failover for writes.
+	writeCtx := rcpx.WithFailoverDenied(allowedCtx)
+
+	// Dummy transaction used only to exercise SendTransaction.
+	// Both configured endpoints are intentionally unavailable.
+	tx := types.NewTx(&types.LegacyTx{
+		Nonce:    0,
+		To:       &common.Address{},
+		Value:    big.NewInt(0),
+		Gas:      21_000,
+		GasPrice: big.NewInt(1),
+	})
+
+	err = eth.SendTransaction(writeCtx, tx)
 	if err == nil {
 		log.Fatal("expected request to fail")
 	}
 
-	var failoverErr *rcpx.FailoverError
-	if !errors.As(err, &failoverErr) {
-		log.Fatal(err)
-	}
-
-	fmt.Printf("\nrequest failed after %d attempts:\n", len(failoverErr.Attempts))
-	for _, attempt := range failoverErr.Attempts {
-		fmt.Printf("%s: %v\n", attempt.Endpoint, attempt.Err)
-	}
+	fmt.Println("write failed; backup was not attempted")
 }

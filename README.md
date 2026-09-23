@@ -1,56 +1,10 @@
 # rcpx
 
-rcpx is a small Go library that provides an HTTP JSON-RPC failover `http.RoundTripper`, mainly for Go applications using clients such as `go-ethereum/rpc` and `ethclient`.
+`rcpx` is a Go `http.RoundTripper` for ordered failover across a small set of fixed HTTP endpoints.
 
-Configure an `http.Client` to use rcpx as its transport. For each request, rcpx tries upstream URLs in priority order until one succeeds, based on a retry policy and safety rails.
+Use it when your application already uses `http.Client` and has a clear primary/backup order for a few provider or RPC endpoints. A primary use case is go-ethereum over HTTP JSON-RPC, but `rcpx` itself is protocol-neutral: it does not parse JSON-RPC or decide which application operations are safe to repeat.
 
-## Key behavior
-
-* Tries upstreams sequentially, in priority order.
-* Tries each eligible upstream at most once per request.
-* By default, continues to the next upstream on any transport error, or on HTTP status `429`, `502`, `503`, `504`.
-* By default, treats HTTP statuses other than `429`, `502`, `503`, `504` as success and returns them unchanged, even if non-2xx.
-* Does not inspect JSON-RPC response bodies; HTTP `200` with a JSON-RPC error body is returned unchanged.
-* If the request context is canceled or deadline exceeded, returns immediately and does not consult the retry policy.
-* Buffers the request body once per request so it can resend it across upstreams, capped by `BodyBufferBytes`.
-* Cooldown is enabled by default and can temporarily skip upstreams after consecutive failover-causing failures.
-* By default, does not retry or fail over non-idempotent JSON-RPC methods such as `eth_sendRawTransaction` and `eth_sendTransaction`.
-
-## API at a glance
-
-* `rcpx.NewRoundTripper(cfg rcpx.Config) (http.RoundTripper, error)`
-
-## When to use rcpx
-
-Use rcpx if you have multiple HTTP JSON-RPC endpoints and want in-process sequential failover, for example a primary RPC provider plus one or more backup providers.
-
-rcpx is most useful when upstreams have a clear priority order and you want explicit failover behavior rather than load balancing.
-
-Do not use rcpx if you need per-upstream auth headers, WebSocket subscriptions, quorum/hedged requests, or gateway/proxy features. rcpx is an HTTP `RoundTripper` and routes each request to one upstream at a time.
-
-## What rcpx does not guarantee
-
-rcpx operates at the HTTP request level. It does not validate Ethereum state, compare providers, or coordinate multiple RPC calls that are part of one larger application operation.
-
-In particular, rcpx does not guarantee that:
-
-* all providers are at the same block height;
-* providers have the same pending state or mempool view;
-* nonce queries are consistent across providers;
-* transaction lookups are visible across providers immediately;
-* a sequence of separate RPC calls reads from the same provider;
-* HTTP `200` responses contain fresh, correct, or globally consistent JSON-RPC data.
-
-For state-sensitive workflows, pin the logical operation to one provider where possible, and use explicit block numbers or block hashes when the RPC method supports them.
-
-## Constraints and non-goals
-
-* Provider auth is expected to be encoded in the upstream URL (path/query).
-* Per-upstream header customization is not supported.
-* Upstreams are full target URLs; requests are sent to that exact URL (no path joining).
-* The returned transport is safe for concurrent use; concurrency characteristics also depend on the provided base transport.
-* rcpx does not inspect JSON-RPC response bodies or provide Ethereum provider consistency guarantees.
-* rcpx is not a proxy, gateway, hosted service, WebSocket layer, load balancer, quorum requester, hedged requester, transaction manager, nonce manager, or provider consistency layer.
+**`rcpx` is failover, not load balancing.** Applications remain responsible for deciding when a logical operation may safely continue to another provider.
 
 ## Installation
 
@@ -58,562 +12,477 @@ For state-sensitive workflows, pin the logical operation to one provider where p
 go get github.com/yermakovsa/rcpx
 ```
 
-Requires Go 1.24 (per `go.mod`).
+The module requires Go 1.24.
 
-## Quick start (go-ethereum)
+## Quick start
 
-rcpx is designed to be used as the HTTP transport behind go-ethereum `rpc` and `ethclient`. You keep using those clients normally; rcpx selects the upstream per attempt.
-
-rcpx rewrites `req.URL` on each attempt. You can use any configured upstream as the initial dial URL; using `Upstreams[0]` keeps the example straightforward.
+Configure complete endpoint URLs and use the transport with a normal `http.Client`:
 
 ```go
 package main
 
 import (
-	"context"
-	"fmt"
 	"log"
 	"net/http"
-	"time"
-
-	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/ethereum/go-ethereum/rpc"
 
 	"github.com/yermakovsa/rcpx"
 )
 
 func main() {
-	const timeout = 20 * time.Second
-
-	upstreams := []string{
-		"https://rpc.example.com/?key=YOUR_KEY",
-		"https://backup.example.com/?key=YOUR_KEY",
-	}
-
-	transport, err := rcpx.NewRoundTripper(rcpx.Config{
-		Upstreams: upstreams,
+	tr, err := rcpx.New(rcpx.Config{
+		Endpoints: []rcpx.Endpoint{
+			{ID: "primary", URL: "https://rpc-a.example/rpc"},
+			{ID: "backup", URL: "https://rpc-b.example/rpc"},
+		},
 	})
 	if err != nil {
-		log.Fatalf("create rcpx transport: %v", err)
+		log.Fatal(err)
 	}
 
-	httpClient := &http.Client{
-		Timeout:   timeout,
-		Transport: transport,
-	}
+	client := &http.Client{Transport: tr}
 
-	ctxDial, cancelDial := context.WithTimeout(context.Background(), timeout)
-	defer cancelDial()
-
-	// The dial URL can be any upstream; rcpx rewrites req.URL per attempt.
-	rpcClient, err := rpc.DialOptions(ctxDial, upstreams[0], rpc.WithHTTPClient(httpClient))
-	if err != nil {
-		log.Fatalf("dial rpc: %v", err)
-	}
-	defer rpcClient.Close()
-
-	ec := ethclient.NewClient(rpcClient)
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	chainID, err := ec.ChainID(ctx)
-	if err != nil {
-		log.Fatalf("chain id: %v", err)
-	}
-	blockNum, err := ec.BlockNumber(ctx)
-	if err != nil {
-		log.Fatalf("block number: %v", err)
-	}
-
-	fmt.Printf("ok chainID=%s blockNumber=%d\n", chainID, blockNum)
-}
-```
-
-## Quick start (net/http)
-
-Create a transport and plug it into an `http.Client`.
-
-rcpx rewrites `req.URL` on each attempt. You can use any configured upstream as the initial request URL; using `Upstreams[0]` keeps the example straightforward.
-
-```go
-package main
-
-import (
-	"bytes"
-	"context"
-	"fmt"
-	"io"
-	"log"
-	"net/http"
-	"time"
-
-	"github.com/yermakovsa/rcpx"
-)
-
-func main() {
-	const timeout = 10 * time.Second
-
-	upstreams := []string{
-		"https://rpc.example.com/?key=YOUR_KEY",
-		"https://backup.example.com/?key=YOUR_KEY",
-	}
-
-	transport, err := rcpx.NewRoundTripper(rcpx.Config{
-		Upstreams: upstreams,
-	})
-	if err != nil {
-		log.Fatalf("create rcpx transport: %v", err)
-	}
-
-	httpClient := &http.Client{
-		Timeout:   timeout,
-		Transport: transport,
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	// The request URL can be any valid URL; rcpx rewrites req.URL per attempt.
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		upstreams[0],
-		bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)),
+	req, err := http.NewRequest(
+		http.MethodGet,
+		"https://rpc-a.example/rpc",
+		nil,
 	)
 	if err != nil {
-		log.Fatalf("build request: %v", err)
+		log.Fatal(err)
 	}
-	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatalf("do request: %v", err)
+		log.Fatal(err)
 	}
 	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024))
-	if err != nil {
-		log.Fatalf("read response: %v", err)
-	}
-
-	fmt.Println("status:", resp.Status)
-	fmt.Println("body (first 1KiB):", string(body))
 }
 ```
 
-## Configuration overview
+Endpoint order is priority order. If an admitted attempt fails with a failover-triggering outcome, `rcpx` may continue to the next usable endpoint.
 
-rcpx is configured via `rcpx.Config`.
+Configured endpoint URLs are complete physical destinations. `rcpx` does not treat them as base URLs or combine them with the incoming request path or query.
 
-Default behavior summary:
+## go-ethereum
 
-| Setting | Default |
-|---|---|
-| Retryable HTTP statuses | `429`, `502`, `503`, `504` |
-| Additional retryable HTTP statuses | None |
-| Body buffer cap | `rcpx.DefaultBodyBufferBytes` (`1 MiB`) |
-| Cooldown | Enabled |
-| Cooldown threshold | `rcpx.DefaultCooldownFailAfterConsecutive` (`3`) consecutive failover-causing failures |
-| Cooldown duration | `rcpx.DefaultCooldownDuration` (`30s`) |
-| Deadline-exceeded cooldown failures | Disabled |
-| Non-idempotent failover | Disabled |
-| Additional non-idempotent methods | None |
-| Base transport | `http.DefaultTransport` |
-
-### How failover works
-
-* Upstreams are tried sequentially, in priority order.
-* Each eligible upstream is tried at most once per request.
-* By default, rcpx continues to the next upstream on any transport error, or on HTTP status `429`, `502`, `503`, `504`.
-* An attempt succeeds when `err == nil` and the status code is not retryable.
-* Other HTTP status codes are treated as success from rcpx's perspective and returned unchanged.
-* JSON-RPC response bodies are not inspected. A JSON-RPC error returned with HTTP `200` is returned unchanged.
-* If the request context is canceled or deadline exceeded, rcpx returns immediately and does not consult the retry policy.
-
-Default failover decision summary:
-
-| Outcome | Default rcpx behavior |
-|---|---|
-| Transport error | Try next eligible upstream |
-| HTTP `429`, `502`, `503`, `504` | Try next eligible upstream |
-| HTTP `500` | Return unchanged |
-| Other non-retryable HTTP status | Return unchanged |
-| HTTP `200` with JSON-RPC error body | Return unchanged |
-| Context canceled or deadline exceeded | Return immediately |
-| Retryable failure for `eth_sendRawTransaction` or `eth_sendTransaction` | Block failover by default |
-| All upstreams cooling down | Return `*rcpx.AllUpstreamsFailedError` with `Attempted == 0` |
-
-### Upstreams
+`rcpx` can sit underneath go-ethereum through `rpc.WithHTTPClient`:
 
 ```go
-type Config struct {
-	Upstreams []string
-	// ...
+endpoints := []rcpx.Endpoint{
+	{ID: "primary", URL: "https://provider-a.example/rpc"},
+	{ID: "backup", URL: "https://provider-b.example/rpc"},
 }
+
+tr, err := rcpx.New(rcpx.Config{
+	Endpoints: endpoints,
+})
+if err != nil {
+	log.Fatal(err)
+}
+
+httpClient := &http.Client{Transport: tr}
+
+rpcClient, err := rpc.DialOptions(
+	context.Background(),
+	endpoints[0].URL,
+	rpc.WithHTTPClient(httpClient),
+)
+if err != nil {
+	log.Fatal(err)
+}
+defer rpcClient.Close()
+
+eth := ethclient.NewClient(rpcClient)
 ```
 
-* `Upstreams` are tried in priority order.
-* Each entry must be an absolute `http` or `https` URL.
-* Requests are sent to that exact URL (scheme/host/path/query); there is no path joining.
+### Basic failover for reads
 
-If `Upstreams` is empty, `rcpx.NewRoundTripper` returns `rcpx.ErrNoUpstreams`.
+Ethereum JSON-RPC reads use HTTP `POST`, so the built-in `GET`/`HEAD` permission rule does not automatically allow them to cross providers.
 
-### Base transport
+When the application knows that a logical read may safely continue to another configured provider, allow it explicitly:
 
 ```go
-type Config struct {
-	Base http.RoundTripper
-	// ...
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+defer cancel()
+
+readCtx := rcpx.WithFailoverAllowed(ctx)
+
+blockNumber, err := eth.BlockNumber(readCtx)
+if err != nil {
+	log.Fatal(err)
 }
 ```
 
-* `Base` is the underlying transport used for all attempts.
-* If `Base` is nil, rcpx uses `http.DefaultTransport`.
-* TLS, proxies, timeouts, and connection pooling come from the base transport and the `http.Client` you use.
+`rcpx` does not inspect the JSON-RPC method name. Whether an operation is safe to continue is application knowledge.
 
-rcpx handles misbehaving base transports defensively:
+See [`examples/goethereum/basic-failover`](examples/goethereum/basic-failover) for a complete example.
 
-* It will not return `(nil, nil)` from `RoundTrip`; if that happens, rcpx returns an error.
-* If a base transport returns both `resp != nil` and `err != nil`, rcpx closes `resp.Body` and treats it as an error to avoid leaks.
+### Keep writes conservative
 
-### Additional retryable HTTP statuses
+A replayable HTTP request is not necessarily an operation that should execute against another provider.
+
+If a parent context broadly allows failover, derive an explicit deny for a sensitive operation:
 
 ```go
-type Config struct {
-	AdditionalRetryableStatusCodes []int
-	// ...
-}
+allowedCtx := rcpx.WithFailoverAllowed(ctx)
+writeCtx := rcpx.WithFailoverDenied(allowedCtx)
+
+err := eth.SendTransaction(writeCtx, tx)
 ```
 
-`AdditionalRetryableStatusCodes` adds status codes to the built-in retryable set: `429`, `502`, `503`, and `504`.
+This keeps the write on its first admitted provider attempt even if that attempt fails.
 
-For example, `[]int{500}` makes HTTP `500` retryable in addition to the defaults. Duplicates are ignored, and values must be three-digit HTTP status codes.
+See [`examples/goethereum/conservative-write`](examples/goethereum/conservative-write).
 
-Retryable status classification happens before `RetryPolicy` is called.
+### Related reads and endpoint preference
 
-### Retry policy
+For related operations, an application may prefer a provider that completed an earlier request:
 
 ```go
-type RetryPolicy func(out rcpx.AttemptOutcome) (retry bool)
+ctx := rcpx.WithFailoverAllowed(parent)
+ctx = rcpx.WithPreferredEndpoint(ctx, preferred)
 ```
 
-You can override the default retry or failover behavior with `Config.RetryPolicy`. The policy is only consulted after a non-success attempt when there is another eligible upstream to try.
+Preference is a **soft ordering hint**. It is not pinning and does not provide a cross-provider consistency guarantee. It does not bypass eligibility, cooldown, permission, replayability, or failover-trigger rules.
 
-`AttemptOutcome` includes:
+Applications that depend on provider-local state, pending state, sessions, or read-after-write behavior must handle those semantics explicitly.
 
-* `Attempt` (1-based attempt number for the current request)
-* `Upstream` (the upstream URL attempted)
-* JSON-RPC info (best-effort): `Method`, `Batch`
-* `StatusCode` (0 if no HTTP response was obtained)
-* `Err` (the error from the base transport, if any)
-* `RetryableByDefault` (whether rcpx classifies the outcome as retryable)
+See [`examples/goethereum/preferred-endpoint`](examples/goethereum/preferred-endpoint).
 
-`RetryableByDefault` is true for transport errors (`Err != nil`), for HTTP status `429`, `502`, `503`, `504`, and for statuses configured with `AdditionalRetryableStatusCodes`.
+## How failover works
 
-The retry policy is only consulted after rcpx has classified an attempt as non-success and there is another eligible upstream to try.
+A later endpoint is not tried merely because another endpoint exists. Endpoint selection, failover permission, failure classification, and request replayability are separate decisions.
 
-The retry policy is not called:
+### Endpoints and priority
 
-* on successful attempts;
-* for the last eligible upstream;
-* when the request context is canceled or its deadline is exceeded.
-
-`RetryPolicy` cannot make a non-retryable HTTP status retryable by itself, because the policy is only called after rcpx has already classified an attempt as non-success. To make an additional HTTP status such as `500` retryable, configure `AdditionalRetryableStatusCodes`.
-
-`RetryPolicy` receives `AttemptOutcome`; it cannot inspect response bodies or response headers. It can decide whether rcpx should continue after an already-classified non-success attempt, but it is not a general response validation hook.
-
-### Attempt observation
+Each endpoint has an application-visible ID and a complete HTTP destination:
 
 ```go
-type Config struct {
-	OnAttempt func(rcpx.AttemptInfo)
-	// ...
-}
-
-type AttemptInfo struct {
-	Attempt    int
-	Upstream   string
-	Method     string
-	Batch      bool
-	StatusCode int
-	Err        error
-	Final      bool
+Endpoints: []rcpx.Endpoint{
+	{ID: "primary", URL: "https://provider-a.example/rpc?key=..."},
+	{ID: "backup", URL: "https://provider-b.example/rpc?key=..."},
 }
 ```
 
-`OnAttempt`, if set, is called once for each attempted upstream. It can be used for logging or metrics, including recording which upstream handled a successful request.
+Configured order is the normal priority order.
 
-`AttemptInfo` includes:
+For each physical attempt, `rcpx` uses the complete URL of the selected endpoint. It does not join paths, merge query strings, or perform service discovery.
 
-* `Attempt` (1-based attempt number for the current request)
-* `Upstream` (the configured upstream URL attempted)
-* JSON-RPC info (best-effort): `Method`, `Batch`
-* `StatusCode` (0 if no HTTP response was obtained)
-* `Err` (the attempt failure cause, if any)
-* `Final` (whether rcpx will make no further upstream attempts for this request after this attempt)
+Endpoint IDs are used by features such as eligibility, preference, events, and attempt errors.
 
-`Final` is true for the attempt that returns a successful response, and also for terminal failures such as the last eligible upstream failing, retry policy stopping failover, or the non-idempotent safety rail blocking failover.
+### Failover triggers
 
-The callback is called synchronously. If it blocks, the request blocks.
+With a live logical request context, a base-transport failure that leaves no usable HTTP response is a failover trigger.
 
-`Upstream` is the configured upstream string and is not redacted. It may contain credentials if your upstream URLs contain credentials.
+The built-in HTTP status triggers are:
 
-### Request body buffering cap
+- `502 Bad Gateway`
+- `503 Service Unavailable`
+- `504 Gateway Timeout`
+
+Applications may add other status codes:
 
 ```go
-type Config struct {
-	BodyBufferBytes int
-	// ...
-}
+tr, err := rcpx.New(rcpx.Config{
+	Endpoints: endpoints,
+	AdditionalTriggerStatusCodes: []int{
+		http.StatusTooManyRequests,
+	},
+})
 ```
 
-rcpx buffers the request body once per request so it can resend it across upstreams.
+A non-trigger HTTP response is terminal from `rcpx`'s point of view, even if its body represents an application-level failure.
 
-* `BodyBufferBytes == 0` uses `rcpx.DefaultBodyBufferBytes` (1 MiB).
-* `BodyBufferBytes < 0` is invalid and causes `NewRoundTripper` to return an error.
-* If the request body exceeds the cap, the request fails with `rcpx.ErrBodyTooLarge`.
-* If the request body cannot be read, the request fails with an error that joins `rcpx.ErrBodyUnreadable` with the underlying read error.
+For example, HTTP 200 containing a JSON-RPC error object does not trigger failover. `rcpx` does not inspect response payloads.
 
-rcpx reads and closes the original request body while buffering it. For each upstream attempt, rcpx sends a cloned request with a fresh reader over the buffered body.
+### Permission to cross endpoints
 
-If an attempt receives a response but rcpx decides to fail over, rcpx closes that failed attempt's response body before trying the next upstream.
+By default, cross-endpoint continuation is inferred as allowed for `GET` and `HEAD`. Other methods are denied unless the application explicitly allows the logical operation or provides a `PermissionPolicy`.
 
-If rcpx returns a response to the caller, the caller owns that response and must close `resp.Body` as usual.
+The authority order is:
+
+```text
+request-scoped allow or deny
+        ↓
+PermissionPolicy
+        ↓
+GET / HEAD inference
+        ↓
+deny
+```
+
+Use request-scoped permission when calling code knows whether an operation may safely cross providers:
+
+```go
+ctx := rcpx.WithFailoverAllowed(parent)
+```
+
+An inherited allow can be overridden for a more sensitive operation:
+
+```go
+ctx := rcpx.WithFailoverDenied(parent)
+```
+
+Permission is operation metadata. It does not:
+
+- make a request body replayable;
+- make an endpoint eligible;
+- bypass cooldown;
+- change which outcomes trigger failover.
+
+When configured, `PermissionPolicy` receives the logical `*http.Request`. An explicit request-scoped allow or deny takes precedence.
+
+### Request bodies and replay
+
+The first admitted endpoint may use the original request body even when that body cannot be replayed.
+
+A later body-bearing attempt requires a fresh body. `rcpx` uses the standard `http.Request.GetBody` mechanism:
+
+```text
+no body
+    -> another attempt can be constructed
+
+body + working GetBody
+    -> another attempt can be constructed
+
+body + no GetBody
+    -> first attempt is valid
+    -> later body-bearing attempts are unavailable
+```
+
+`rcpx` does not buffer arbitrary request bodies to manufacture replayability.
+
+Permission and replayability are independent: allowing an operation to cross endpoints does not make its body replayable, and having a replayable body does not make the operation safe to repeat.
+
+## Endpoint selection
+
+### Eligibility
+
+Applications may exclude configured endpoints through `Eligible`:
+
+```go
+tr, err := rcpx.New(rcpx.Config{
+	Endpoints: endpoints,
+	Eligible: func(id rcpx.EndpointID) bool {
+		return !disabled(id)
+	},
+})
+```
+
+Eligibility is captured for the logical request. The decisions observed by `rcpx` remain fixed for that request.
+
+### Preferred endpoint
+
+A request may carry one preferred endpoint:
+
+```go
+ctx := rcpx.WithPreferredEndpoint(parent, "backup")
+```
+
+If the endpoint exists and is externally eligible, it is promoted to the front of the request's consideration order. The relative order of the remaining endpoints does not change.
+
+Preference does not override eligibility, cooldown, permission, replayability, or failover-trigger rules.
+
+An unknown preferred endpoint produces an error matching `rcpx.ErrUnknownEndpoint` before a physical attempt is made.
 
 ### Cooldown
 
-```go
-type Config struct {
-	Cooldown *rcpx.CooldownConfig
-	// ...
-}
+Cooldown passively suppresses endpoints after qualifying failures. It is enabled by default with:
 
-type CooldownConfig struct {
-	Disabled              bool
-	FailAfterConsecutive  int
-	Duration              time.Duration
-	CountDeadlineExceeded bool
-}
+- 3 consecutive cooldown failures;
+- a 30-second cooldown duration.
+
+It can be configured:
+
+```go
+Cooldown: rcpx.CooldownConfig{
+	Threshold: 2,
+	Duration:  time.Minute,
+},
 ```
 
-Cooldown is enabled by default (when `Cooldown` is nil).
-
-Behavior:
-
-* Cooldown is tracked per-upstream.
-* Only failures that caused rcpx to continue to another upstream count toward the consecutive failure threshold.
-* Once an upstream hits the threshold, it is skipped for the configured duration.
-* A successful attempt on an upstream resets its cooldown counters.
-* If `CountDeadlineExceeded` is enabled, an attempted `context.DeadlineExceeded` also counts toward the threshold. The current request still returns immediately and does not fail over.
-
-Configuration:
-
-* Set `Cooldown: &rcpx.CooldownConfig{Disabled: true}` to turn cooldown off.
-* When enabled:
-
-  * `FailAfterConsecutive == 0` uses `rcpx.DefaultCooldownFailAfterConsecutive` (3).
-  * `Duration == 0` uses `rcpx.DefaultCooldownDuration` (30s).
-  * `CountDeadlineExceeded` is disabled by default.
-* Negative values for `FailAfterConsecutive` or `Duration` are invalid and cause `NewRoundTripper` to return an error.
-
-Cooldown is time-based. When the cooldown duration expires, the upstream becomes eligible again; rcpx does not perform a health check before reusing it. Cooldown does not prove that an upstream is fresh, synced, at a particular block height, or returning correct JSON-RPC data.
-
-When all upstreams are cooling down, requests fail with `*rcpx.AllUpstreamsFailedError` where `Attempted == 0`. (Its `Unwrap()` reports `rcpx.ErrNoEligibleUpstreams`.)
-
-### Non-idempotent safety rail
+or disabled:
 
 ```go
-type Config struct {
-	AllowNonIdempotent             bool
-	AdditionalNonIdempotentMethods []string
-	// ...
-}
+Cooldown: rcpx.CooldownConfig{
+	Disabled: true,
+},
 ```
 
-By default, rcpx will not retry or fail over non-idempotent JSON-RPC methods.
+Cooldown failures are deliberately narrow: live-context transport failures with no usable response, plus HTTP `502`, `503`, and `504`.
 
-* If `AllowNonIdempotent` is false (default) and a request is classified as non-idempotent, rcpx may attempt it once, but it will not continue to another upstream even if the retry policy would otherwise continue.
-* In that case, rcpx returns `*rcpx.NonIdempotentBlockedError` wrapping the underlying failure cause.
+Other obtained HTTP responses reset the consecutive cooldown failure streak, even when an additional status code is configured as a failover trigger.
 
-Current non-idempotent method list (built-in):
+Eligibility and cooldown are different mechanisms. Eligibility is captured for the logical request; cooldown is checked when an endpoint's turn arrives.
 
-* `eth_sendTransaction`
-* `eth_sendRawTransaction`
+Cooldown is not a health checker. There are no active probes, half-open states, background workers, or adaptive retry scheduling.
 
-`AdditionalNonIdempotentMethods` adds exact JSON-RPC method names to the built-in non-idempotent set. The built-in methods cannot be removed. Duplicate names are ignored, and empty names are invalid.
+## Results and errors
 
-`AllowNonIdempotent` applies to both built-in and configured methods.
+When failover follows an HTTP trigger response, `rcpx` may retain that response while trying a later endpoint.
 
-Batch requests are treated conservatively:
+If a later endpoint produces another HTTP response, that newer response replaces the earlier retained response. A later transport failure does not erase a real HTTP response that is still available.
 
-* If any item in the batch is unknown or unparseable for method extraction, the whole batch is treated as non-idempotent.
-* If method extraction fails (`ok == false`), rcpx treats the request as non-idempotent.
+For example:
 
-If you set `AllowNonIdempotent` to true, rcpx can fail over even for these methods. This can duplicate side effects. Use with care.
+```text
+primary -> HTTP 503
+backup  -> transport error
 
-## Ethereum provider consistency caveats
+result  -> primary's HTTP 503 response
+```
 
-rcpx fails over individual HTTP requests. It does not know when several separate RPC calls are part of one larger application operation.
+If preparing a later body-bearing attempt fails through `GetBody`, that later endpoint is not physically attempted. A previously retained HTTP response can still be returned.
 
-If failover happens between separate calls, the application may observe data from different providers, different block heights, different chain heads, different pending states, or different mempool views.
+Logical request cancellation or deadline expiration takes priority over a retained response.
 
-A single JSON-RPC batch HTTP request is not split across providers. The whole HTTP request is sent to one upstream per attempt. If that attempt fails in a retryable way, the whole batch may be retried on another upstream.
+Responses that remain internal to `rcpx` are closed when they are discarded or superseded. Once a response is returned, its body belongs to the caller and should be closed normally.
 
-Be careful with workflows involving:
+### Errors
 
-* multiple related `eth_call` requests;
-* `eth_getTransactionCount` with the `pending` tag;
-* transaction submission followed by transaction lookup;
-* nonce management;
-* pending transaction tracking;
-* read-after-write assumptions.
+`ErrNoUsableEndpoint` is returned directly when no physical attempt can be admitted, for example when all captured eligibility decisions exclude their endpoints or every candidate is cooling before the first attempt.
 
-For state-sensitive workflows, prefer pinning the whole logical operation to one provider where possible, and use explicit block numbers or block hashes when the RPC method supports them.
+`ErrUnknownEndpoint` identifies an invalid request-scoped endpoint reference such as an unknown preferred endpoint.
 
-rcpx can improve availability when an upstream fails at the HTTP transport/status level. It does not guarantee Ethereum state consistency across providers.
-
-## Performance and keep-alives
-
-* Connection reuse and pooling behavior comes from the base transport (`Config.Base`). If you use `http.DefaultTransport` (a `*http.Transport`), keep-alive pools are per host.
-* If the primary upstream is healthy, rcpx adds per-request overhead from buffering the request body (up to `BodyBufferBytes`) and best-effort JSON-RPC method parsing.
-* The first failover to a cold secondary may pay a handshake once; after that it can reuse connections like any other HTTP client.
-* Tip: if you use a custom `*http.Transport` as `Base`, tune it for your workload (for example, `MaxIdleConnsPerHost`, `MaxConnsPerHost`).
-
-## Error handling
-
-rcpx uses sentinel errors for common cases, plus typed errors that carry per-attempt detail. The typed errors support `errors.Is` and `errors.As` via `Unwrap()`.
-
-For runnable error inspection examples, see `examples/goethereum/error-inspection`.
-
-### Sentinel errors
-
-* `rcpx.ErrNoUpstreams`
-  Returned when `Config.Upstreams` is empty.
-
-* `rcpx.ErrNoEligibleUpstreams`
-  Indicates that no upstreams were eligible to try (for example, all cooling down). This is returned via `AllUpstreamsFailedError.Unwrap()` when `Attempted == 0`.
-
-* `rcpx.ErrBodyTooLarge`
-  Returned when the request body exceeds the configured buffer cap.
-
-* `rcpx.ErrBodyUnreadable`
-  Returned (joined with an underlying error) when the request body cannot be read.
-
-### `AllUpstreamsFailedError`
-
-`*rcpx.AllUpstreamsFailedError` is returned when no upstream attempt succeeded.
-
-Fields:
-
-* `Attempted`
-  Number of attempts made. If `Attempted == 0`, no upstreams were eligible.
-* `SkippedCooldown`
-  How many upstreams were skipped due to cooldown.
-* `Failures []rcpx.AttemptFailure`
-  Failures in attempt order (one per attempt that rcpx recorded).
-
-`Unwrap()` behavior:
-
-* If `Attempted == 0`, `Unwrap()` returns `rcpx.ErrNoEligibleUpstreams`.
-* Otherwise, `Unwrap()` returns the last non-nil underlying failure error recorded in `Failures`.
-
-Each `AttemptFailure` includes:
-
-* `Upstream` (string)
-* JSON-RPC info (best-effort): `Method`, `Batch`
-* `StatusCode` (0 if no HTTP response was obtained)
-* `Err` (the failure cause)
-* `Retryable` (whether rcpx continued after this attempt)
-
-Snippet:
+`FailoverError` is used when one or more physical attempts ended without a usable HTTP response and no HTTP response is available to return. Its `Attempts` slice records those attempts in order, and the terminal cause is available through normal Go error unwrapping.
 
 ```go
-var ae *rcpx.AllUpstreamsFailedError
-if errors.As(err, &ae) {
-	fmt.Printf("attempted=%d skippedCooldown=%d failures=%d\n",
-		ae.Attempted, ae.SkippedCooldown, len(ae.Failures))
-
-	for i, f := range ae.Failures {
-		fmt.Printf("  #%d upstream=%s status=%d retryable=%v err=%v\n",
-			i+1, f.Upstream, f.StatusCode, f.Retryable, f.Err)
+var fe *rcpx.FailoverError
+if errors.As(err, &fe) {
+	for _, attempt := range fe.Attempts {
+		log.Printf("endpoint=%s err=%v", attempt.Endpoint, attempt.Err)
 	}
+}
 
-	fmt.Printf("errors.Is(ErrNoEligibleUpstreams)=%v\n",
-		errors.Is(err, rcpx.ErrNoEligibleUpstreams),
-	)
+if errors.Is(err, rcpx.ErrNoUsableEndpoint) {
+	log.Printf("no endpoint could be attempted")
+}
+
+if errors.Is(err, rcpx.ErrUnknownEndpoint) {
+	log.Printf("request referred to an unknown endpoint")
 }
 ```
 
-### `NonIdempotentBlockedError`
+Logical cancellation and deadline expiration remain normal context errors rather than being wrapped in `FailoverError`.
 
-`*rcpx.NonIdempotentBlockedError` is returned when a request classified as non-idempotent would otherwise retry or fail over, but `AllowNonIdempotent` is false.
+See [`examples/goethereum/error-inspection`](examples/goethereum/error-inspection) for a complete example.
 
-It includes:
+## Observability and `http.Client` composition
 
-* `Outcome rcpx.AttemptOutcome` (the attempt outcome that would have been used for policy decisions)
-* `Cause error` (the underlying failure cause)
+### Events
 
-`Unwrap()` returns `Cause`.
-
-Snippet:
+`Config.OnEvent` provides a synchronous observation hook:
 
 ```go
-var be *rcpx.NonIdempotentBlockedError
-if errors.As(err, &be) {
-	fmt.Printf("blocked method=%s retryableByDefault=%v\n",
-		be.Outcome.Method, be.Outcome.RetryableByDefault,
+OnEvent: func(ctx context.Context, event rcpx.Event) {
+	log.Printf(
+		"kind=%d endpoint=%s attempt=%d status=%d err=%v",
+		event.Kind,
+		event.Endpoint,
+		event.Attempt,
+		event.StatusCode,
+		event.Err,
 	)
-	fmt.Printf("cause=%v\n", be.Unwrap())
-}
+},
 ```
 
-### Cancellation and deadlines
+The event kinds are:
 
-If the request context is canceled or its deadline is exceeded, rcpx returns immediately and does not fail over within that request. With `CooldownConfig.CountDeadlineExceeded` enabled, an attempted `context.DeadlineExceeded` can count toward cooldown for future requests; `context.Canceled` does not count. You can check for these conditions with `errors.Is`:
+| Event | Meaning |
+| --- | --- |
+| `EventAttempt` | A physical endpoint attempt completed. |
+| `EventCooldownSkip` | An endpoint's turn was reached, but live cooldown suppressed it. |
+| `EventReplayError` | A later attempt could not be constructed because `GetBody` failed. |
+| `EventResult` | The logical `RoundTrip` is about to return its final response or error. |
+
+Events for one logical request are delivered in causal order. Different logical requests may invoke the callback concurrently, so application-owned shared state must be protected.
+
+The callback should return promptly. `rcpx` does not recover panics from `OnEvent`.
+
+### Base transport
+
+The configured `Base` transport handles every physical attempt. If `Base` is nil, `http.DefaultTransport` is used.
+
+`Base` is the composition point for behavior that needs to run separately for each selected destination, such as:
+
+- endpoint-specific authentication;
+- host- or path-bound signing;
+- tracing;
+- custom networking behavior.
 
 ```go
-if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-	// request was canceled or timed out
-}
+tr, err := rcpx.New(rcpx.Config{
+	Endpoints: endpoints,
+	Base:      customTransport,
+})
 ```
 
-## Examples reference
+### Concurrency and `CloseIdleConnections`
 
-All examples are runnable under `examples/goethereum/` and use rcpx as the HTTP transport behind go-ethereum `rpc` / `ethclient`.
+A constructed `Transport` is intended for concurrent reuse.
 
-### `examples/goethereum/basic-failover`
+Custom base transports and application callbacks must satisfy their own concurrency requirements. `PermissionPolicy`, `Eligible`, and `OnEvent` may run concurrently for different logical requests.
 
-* Shows: Basic wiring: build an rcpx `http.RoundTripper`, plug it into an `http.Client`, and pass that client to `rpc.DialOptions` via `rpc.WithHTTPClient`.
-* Calls: Read-only methods: `ChainID` and `BlockNumber`.
-* Env: Uses `RCPX_UPSTREAMS` (comma-separated) and requires at least 2 URLs.
-* Expected behavior: If the first upstream fails in a retryable way, rcpx tries the next eligible upstream.
+`Transport.CloseIdleConnections` forwards to the base transport when the base supports that operation, so `http.Client.CloseIdleConnections` composes normally.
 
-### `examples/goethereum/cooldown`
+## Destination-sensitive request state
 
-* Shows: Cooldown behavior.
-* Setup: Wraps the base transport to log each attempted URL and count hits per upstream; configures `CooldownConfig` with `FailAfterConsecutive=1` and `Duration=30s`.
-* Env: Uses `RCPX_UPSTREAMS`.
-* Expected behavior: For the clearest demo, set the first upstream to an unreachable URL and the second to a working RPC URL. After the first upstream fails and rcpx fails over, later requests should skip the first upstream while it is cooling down.
+Changing the physical destination can change the meaning of request state prepared for a particular host or URL.
 
-### `examples/goethereum/non-idempotent-default-block`
+For `Request.Host`, `rcpx` uses these rules:
 
-* Shows: The default non-idempotent safety rail.
-* Setup: Uses intentionally failing upstreams (closed local ports) to trigger a retryable failure, then calls `eth_sendRawTransaction`.
-* Expected: `*rcpx.NonIdempotentBlockedError` (checked via `errors.As`).
-* Note: The closed local ports are intentional so the example does not submit a transaction to a real provider.
+```text
+Host == ""
+    -> remains empty
 
-### `examples/goethereum/non-idempotent-allow`
+Host == original URL.Host
+    -> treated as URL-derived
+    -> follows the selected endpoint URL.Host
 
-* Shows: Opting in to failover for non-idempotent methods with `AllowNonIdempotent: true`.
-* Setup: Uses intentionally failing upstreams (closed local ports) and calls `eth_sendRawTransaction`.
-* Expected: `*rcpx.AllUpstreamsFailedError`, then prints attempt details from `Failures`.
+Host != original URL.Host
+    -> treated as custom
+    -> preserved
+```
 
-### `examples/goethereum/error-inspection`
+The comparison is exact. A distinguishably custom Host is preserved across physical attempts.
 
-* Shows: `errors.As` and `errors.Is` for `*rcpx.AllUpstreamsFailedError` and `*rcpx.NonIdempotentBlockedError`.
-* Expected behavior: Demonstrates how to distinguish exhausted upstream attempts from failover blocked by the non-idempotent safety rail.
+One ambiguity remains: if an application deliberately wants a sticky custom Host whose value is exactly equal to the original `URL.Host`, that value is indistinguishable from ordinary URL-derived Host state and will follow the selected endpoint instead.
+
+If an application requires different Host behavior, `Config.Base` middleware can reapply the intended value for every physical attempt.
+
+Host is only one form of destination-sensitive state. Endpoint-specific credentials, host- or path-bound signatures, provider-specific headers, cookies, session state, and similar metadata may also need application-specific handling.
+
+`rcpx` does not automatically regenerate, rewrite, or validate those values when it selects another destination.
+
+Redirect handling belongs to `http.Client`. A followed redirect starts another logical transport invocation rather than becoming part of `rcpx`'s endpoint-attempt sequence.
+
+## Examples
+
+The repository includes go-ethereum examples for the main integration patterns:
+
+- [`examples/goethereum/basic-failover`](examples/goethereum/basic-failover) — use `rcpx` through `rpc.WithHTTPClient` and allow a JSON-RPC read to fail over.
+- [`examples/goethereum/conservative-write`](examples/goethereum/conservative-write) — explicitly prevent a write from crossing providers.
+- [`examples/goethereum/error-inspection`](examples/goethereum/error-inspection) — inspect failed physical attempts through `FailoverError`.
+- [`examples/goethereum/preferred-endpoint`](examples/goethereum/preferred-endpoint) — prefer the provider that completed an earlier related read without treating preference as pinning.
+
+## What rcpx does not do
+
+`rcpx` is a focused HTTP failover transport, not a general resilience or routing framework.
+
+It does not provide:
+
+- load balancing or service discovery;
+- active health checks;
+- a general retry, backoff, or `Retry-After` scheduler;
+- application-protocol parsing or JSON-RPC error interpretation;
+- arbitrary request-body buffering to create replayability;
+- a general signing, authentication, or header-rewrite framework;
+- hard provider pinning or cross-provider state consistency;
+- base-URL path/query composition;
+- WebSocket failover;
+- Ethereum transaction, nonce, or pending-state management.
+
+Applications that depend on provider-local state, sessions, pending state, or read-after-write behavior must design for those semantics explicitly.
 
 ## License
 
-MIT. See `LICENSE`.
+MIT. See [LICENSE](LICENSE).

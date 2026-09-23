@@ -89,10 +89,10 @@ type Config struct {
 type CooldownConfig struct {
 	Disabled bool
 
-	// 0 => DefaultCooldownFailAfterConsecutive (unless Disabled=true)
+	// 0 => default threshold (3), unless Disabled=true
 	Threshold int
 
-	// 0 => DefaultCooldownDuration (unless Disabled=true)
+	// 0 => default duration (30s), unless Disabled=true
 	Duration time.Duration
 }
 
@@ -210,12 +210,12 @@ func resolveCooldown(cc CooldownConfig) (effectiveCooldown, error) {
 
 	threshold := cc.Threshold
 	if threshold == 0 {
-		threshold = DefaultCooldownFailAfterConsecutive
+		threshold = defaultCooldownThreshold
 	}
 
 	duration := cc.Duration
 	if duration == 0 {
-		duration = DefaultCooldownDuration
+		duration = defaultCooldownDuration
 	}
 
 	return effectiveCooldown{

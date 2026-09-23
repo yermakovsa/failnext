@@ -2,10 +2,9 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"log"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -15,81 +14,53 @@ import (
 )
 
 func main() {
-	const timeout = 20 * time.Second
+	// Intentionally unavailable so the example exercises failover.
+	const primaryURL = "http://127.0.0.1:65534"
 
-	upstreams := splitNonEmpty(os.Getenv("RCPX_UPSTREAMS"))
-	if len(upstreams) < 2 {
-		fmt.Fprintln(os.Stderr, "need at least 2 upstream URLs (comma-separated) in RCPX_UPSTREAMS")
-		fmt.Fprintln(os.Stderr, `example: RCPX_UPSTREAMS="https://alchemy...,https://quicknode..." go run .`)
-		os.Exit(2)
+	backupURL := os.Getenv("ETH_RPC_URL")
+	if backupURL == "" {
+		log.Fatal("set ETH_RPC_URL to a working Ethereum HTTP RPC endpoint")
 	}
 
-	rt, err := rcpx.New(rcpx.Config{
-		Endpoints: endpointsFromURLs(upstreams),
-		Base:      http.DefaultTransport,
-		// Cooldown defaults enabled.
+	tr, err := rcpx.New(rcpx.Config{
+		Endpoints: []rcpx.Endpoint{
+			{ID: "primary", URL: primaryURL},
+			{ID: "backup", URL: backupURL},
+		},
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "create rcpx transport: %v\n", err)
-		os.Exit(1)
+		log.Fatal(err)
 	}
 
-	httpClient := &http.Client{
-		Timeout:   timeout,
-		Transport: rt,
-	}
+	httpClient := &http.Client{Transport: tr}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	// The dial URL can be any upstream; rcpx selects the actual endpoint per attempt.
-	rpcClient, err := rpc.DialOptions(ctx, upstreams[0], rpc.WithHTTPClient(httpClient))
+	rpcClient, err := rpc.DialOptions(
+		context.Background(),
+		primaryURL,
+		rpc.WithHTTPClient(httpClient),
+	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dial rpc: %v\n", err)
-		os.Exit(1)
+		log.Fatal(err)
 	}
 	defer rpcClient.Close()
 
-	ec := ethclient.NewClient(rpcClient)
+	eth := ethclient.NewClient(rpcClient)
 
-	chainID, err := ec.ChainID(rcpx.WithFailoverAllowed(ctx))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// JSON-RPC reads use POST, so explicitly allow this read to continue
+	// from the unavailable primary to the backup provider.
+	readCtx := rcpx.WithFailoverAllowed(ctx)
+
+	blockNumber, err := eth.BlockNumber(readCtx)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "chain id: %v\n", err)
-		os.Exit(1)
+		log.Fatal(err)
 	}
 
-	blockNum, err := ec.BlockNumber(rcpx.WithFailoverAllowed(ctx))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "block number: %v\n", err)
-		os.Exit(1)
-	}
+	log.Printf("block number: %d", blockNumber)
 
-	fmt.Printf("ok chainID=%s blockNumber=%d\n", chainID, blockNum)
-}
-
-func endpointsFromURLs(urls []string) []rcpx.Endpoint {
-	endpoints := make([]rcpx.Endpoint, len(urls))
-	for i, url := range urls {
-		endpoints[i] = rcpx.Endpoint{
-			ID:  rcpx.EndpointID(fmt.Sprintf("endpoint-%d", i+1)),
-			URL: url,
-		}
-	}
-	return endpoints
-}
-
-func splitNonEmpty(csv string) []string {
-	if csv == "" {
-		return nil
-	}
-	parts := strings.Split(csv, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		out = append(out, p)
-	}
-	return out
+	// Disable failover for writes.
+	// writeCtx := rcpx.WithFailoverDenied(readCtx)
+	// err = eth.SendTransaction(writeCtx, tx)
 }
