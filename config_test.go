@@ -268,11 +268,11 @@ func TestNewCooldownConfiguration(t *testing.T) {
 		if !tr.cfg.cooldown.enabled {
 			t.Fatal("expected cooldown enabled by default")
 		}
-		if tr.cfg.cooldown.threshold != DefaultCooldownFailAfterConsecutive {
-			t.Fatalf("expected threshold=%d, got %d", DefaultCooldownFailAfterConsecutive, tr.cfg.cooldown.threshold)
+		if tr.cfg.cooldown.threshold != 3 {
+			t.Fatalf("expected threshold=3, got %d", tr.cfg.cooldown.threshold)
 		}
-		if tr.cfg.cooldown.duration != DefaultCooldownDuration {
-			t.Fatalf("expected duration=%s, got %s", DefaultCooldownDuration, tr.cfg.cooldown.duration)
+		if tr.cfg.cooldown.duration != 30*time.Second {
+			t.Fatalf("expected duration=%s, got %s", 30*time.Second, tr.cfg.cooldown.duration)
 		}
 	})
 
@@ -290,8 +290,8 @@ func TestNewCooldownConfiguration(t *testing.T) {
 		if tr.cfg.cooldown.threshold != 5 {
 			t.Fatalf("expected threshold=5, got %d", tr.cfg.cooldown.threshold)
 		}
-		if tr.cfg.cooldown.duration != DefaultCooldownDuration {
-			t.Fatalf("expected duration=%s, got %s", DefaultCooldownDuration, tr.cfg.cooldown.duration)
+		if tr.cfg.cooldown.duration != 30*time.Second {
+			t.Fatalf("expected duration=%s, got %s", 30*time.Second, tr.cfg.cooldown.duration)
 		}
 	})
 
@@ -306,8 +306,8 @@ func TestNewCooldownConfiguration(t *testing.T) {
 		if !tr.cfg.cooldown.enabled {
 			t.Fatal("expected cooldown enabled")
 		}
-		if tr.cfg.cooldown.threshold != DefaultCooldownFailAfterConsecutive {
-			t.Fatalf("expected threshold=%d, got %d", DefaultCooldownFailAfterConsecutive, tr.cfg.cooldown.threshold)
+		if tr.cfg.cooldown.threshold != 3 {
+			t.Fatalf("expected threshold=3, got %d", tr.cfg.cooldown.threshold)
 		}
 		if tr.cfg.cooldown.duration != 2*time.Minute {
 			t.Fatalf("expected duration=%s, got %s", 2*time.Minute, tr.cfg.cooldown.duration)

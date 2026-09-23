@@ -1,24 +1,29 @@
-// Package rcpx provides an HTTP JSON-RPC failover transport for go-ethereum
-// clients (rpc/ethclient).
+// Package rcpx provides a specialized HTTP failover RoundTripper for applications
+// that use a small, ordered set of fixed endpoint destinations.
 //
-// Configure an http.Client with an rcpx transport (for example via
-// rpc.WithHTTPClient). For each request, rcpx tries the configured upstream URLs
-// in priority order until one succeeds.
+// A Transport selects a configured endpoint for each physical attempt. Configured
+// order is authoritative; optional eligibility and one request-scoped preference
+// affect the request-local consideration order, while passive cooldown is checked
+// live before each attempt.
 //
-// rcpx selects an upstream URL per attempt. Provider auth is expected to be
-// encoded in the upstream URL (path/query); per-upstream header customization is
-// not supported.
+// Cross-endpoint continuation is separate from endpoint selection. Applications
+// can allow or deny it through request context or PermissionPolicy. Later
+// body-bearing attempts use Request.GetBody; rcpx does not buffer bodies to make
+// them replayable.
+//
+// rcpx operates at the HTTP transport layer. It does not inspect protocol payloads
+// or provide generic load balancing, health checking, retry scheduling, or
+// destination-specific request rewriting. Use a Transport as http.Client.Transport;
+// Base handles each physical attempt.
 package rcpx
 
 import "time"
 
 const (
-	// DefaultCooldownFailAfterConsecutive is the default threshold of consecutive
-	// failover-causing failures required to cool down an endpoint.
-	DefaultCooldownFailAfterConsecutive = 3
-
-	// DefaultCooldownDuration is the default cooldown duration.
-	DefaultCooldownDuration = 30 * time.Second
+	// Internal cooldown defaults. They remain implementation details so the public
+	// surface stays limited to CooldownConfig.
+	defaultCooldownThreshold = 3
+	defaultCooldownDuration  = 30 * time.Second
 )
 
 // New validates cfg and returns a reusable Transport.

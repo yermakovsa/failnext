@@ -437,11 +437,15 @@ func replayBodyForNextAttempt(req *http.Request) (body io.ReadCloser, replayable
 // cloneRequestForEndpoint clones orig and targets the provided endpoint URL.
 // endpoint must be a full target URL; there is no path joining.
 func cloneRequestForEndpoint(orig *http.Request, endpoint *url.URL, body io.ReadCloser) *http.Request {
+	hostFollowsURL := orig.Host != "" && orig.URL != nil && orig.Host == orig.URL.Host
 	r := orig.Clone(orig.Context())
 
 	if endpoint != nil {
 		u := *endpoint
 		r.URL = &u
+		if hostFollowsURL {
+			r.Host = u.Host
+		}
 	}
 
 	r.RequestURI = ""

@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -751,7 +753,7 @@ func TestRoundTrip_UsesConfiguredEndpointOrder(t *testing.T) {
 	assertCalls(t, base, firstURL, secondURL)
 }
 
-func TestRoundTrip_UsesCompleteEndpointDestinationAndPreservesHost(t *testing.T) {
+func TestRoundTrip_UsesCompleteEndpointDestinationAndPreservesCustomHost(t *testing.T) {
 	endpointURL := "https://endpoint.test/fixed/rpc?key=abc"
 	originalURL := "https://original.test/original/path?old=1"
 
@@ -799,6 +801,91 @@ func TestRoundTrip_UsesCompleteEndpointDestinationAndPreservesHost(t *testing.T)
 	t.Cleanup(func() { resp.Body.Close() })
 
 	assertStatus(t, resp, 200)
+}
+
+func TestRoundTrip_ConcurrentReuseWithFailover(t *testing.T) {
+	const requestCount = 32
+
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+
+	var primaryCalls atomic.Int32
+	var backupCalls atomic.Int32
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case u1:
+			primaryCalls.Add(1)
+			return nil, io.EOF
+		case u2:
+			backupCalls.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("ok")),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		default:
+			return nil, fmt.Errorf("unexpected URL: %s", req.URL)
+		}
+	})
+
+	rt := mustNewTransport(t, Config{
+		Endpoints: testEndpoints(u1, u2),
+		Base:      base,
+		Cooldown:  CooldownConfig{Disabled: true},
+	})
+
+	requests := make([]*http.Request, requestCount)
+	for i := range requests {
+		req, err := http.NewRequest(http.MethodGet, "https://logical.test/request", nil)
+		if err != nil {
+			t.Fatalf("http.NewRequest: %v", err)
+		}
+		requests[i] = req.WithContext(WithFailoverAllowed(req.Context()))
+	}
+
+	start := make(chan struct{})
+	errCh := make(chan error, requestCount)
+	var wg sync.WaitGroup
+	for _, req := range requests {
+		wg.Add(1)
+		go func(req *http.Request) {
+			defer wg.Done()
+			<-start
+
+			resp, err := rt.RoundTrip(req)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if resp == nil {
+				errCh <- errors.New("RoundTrip returned nil response")
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				errCh <- fmt.Errorf("unexpected status: got=%d want=%d", resp.StatusCode, http.StatusOK)
+				return
+			}
+			errCh <- nil
+		}(req)
+	}
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent RoundTrip error: %v", err)
+		}
+	}
+	if got := primaryCalls.Load(); got != requestCount {
+		t.Fatalf("expected primary calls=%d, got %d", requestCount, got)
+	}
+	if got := backupCalls.Load(); got != requestCount {
+		t.Fatalf("expected backup calls=%d, got %d", requestCount, got)
+	}
 }
 
 func TestRoundTrip_PreservesNilBodyWhenOriginalBodyNilAndEmpty(t *testing.T) {

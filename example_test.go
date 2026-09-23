@@ -17,16 +17,16 @@ func ExampleNew_failover() {
 	var hits1 atomic.Int32
 	var hits2 atomic.Int32
 
-	// Upstream #1: always returns a failover-triggering HTTP 503.
+	// Endpoint #1: always returns a failover-triggering HTTP 503.
 	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits1.Add(1)
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("upstream unavailable"))
+		w.Write([]byte("endpoint unavailable"))
 	}))
 	defer srv1.Close()
 
-	// Upstream #2: succeeds.
+	// Endpoint #2: succeeds.
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits2.Add(1)
 		w.Header().Set("Content-Type", "application/json")
@@ -46,7 +46,7 @@ func ExampleNew_failover() {
 
 	httpClient := &http.Client{Transport: rt}
 
-	// rcpx picks the upstream per attempt; the initial URL is just a placeholder.
+	// JSON-RPC reads use POST, so allow this logical read to cross endpoints.
 	ctx := rcpx.WithFailoverAllowed(context.Background())
 	req := jsonRPCRequest(ctx, srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
 
@@ -117,18 +117,18 @@ func ExampleWithFailoverAllowed() {
 	var hits1 atomic.Int32
 	var hits2 atomic.Int32
 
-	// Upstream #1 returns a failover-triggering 503.
+	// Endpoint #1 returns a failover-triggering 503.
 	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits1.Add(1)
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer srv1.Close()
 
-	// Upstream #2 succeeds with a JSON-RPC response.
+	// Endpoint #2 succeeds with a JSON-RPC response.
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits2.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0xdeadbeef"}`))
+		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x2a"}`))
 	}))
 	defer srv2.Close()
 
@@ -144,8 +144,10 @@ func ExampleWithFailoverAllowed() {
 
 	httpClient := &http.Client{Transport: rt}
 
+	// The operation is a read, but JSON-RPC uses POST. Mark this logical read as
+	// safe to continue across configured endpoints.
 	ctx := rcpx.WithFailoverAllowed(context.Background())
-	req := jsonRPCRequest(ctx, srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0xdeadbeef"]}`)
+	req := jsonRPCRequest(ctx, srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -162,21 +164,62 @@ func ExampleWithFailoverAllowed() {
 
 	fmt.Printf("server1=%d server2=%d result=%s\n", hits1.Load(), hits2.Load(), out.Result)
 	// Output:
-	// server1=1 server2=1 result=0xdeadbeef
+	// server1=1 server2=1 result=0x2a
+}
+
+func ExampleWithFailoverDenied() {
+	var physicalAttempts atomic.Int32
+	primaryErr := errors.New("primary transport failure")
+
+	rt, err := rcpx.New(rcpx.Config{
+		Endpoints: []rcpx.Endpoint{
+			{ID: "primary", URL: "https://primary.example/rpc"},
+			{ID: "backup", URL: "https://backup.example/rpc"},
+		},
+		Base: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			physicalAttempts.Add(1)
+			if req.Body != nil {
+				_ = req.Body.Close()
+			}
+			if req.URL.Host == "primary.example" {
+				return nil, primaryErr
+			}
+			return nil, errors.New("backup should not be attempted")
+		}),
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	// A broad parent context may allow failover for surrounding reads. Derive an
+	// explicit deny for a write so the write cannot cross endpoints.
+	parent := rcpx.WithFailoverAllowed(context.Background())
+	writeCtx := rcpx.WithFailoverDenied(parent)
+	req := jsonRPCRequest(writeCtx, "https://logical.example/rpc", `{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0xdeadbeef"]}`)
+
+	_, err = rt.RoundTrip(req)
+	var fe *rcpx.FailoverError
+	if !errors.As(err, &fe) {
+		panic("expected FailoverError")
+	}
+
+	fmt.Printf("physical-attempts=%d recorded-attempts=%d\n", physicalAttempts.Load(), len(fe.Attempts))
+	// Output:
+	// physical-attempts=1 recorded-attempts=1
 }
 
 func ExampleNew_cooldownDisabled() {
 	var hits1 atomic.Int32
 	var hits2 atomic.Int32
 
-	// Upstream #1: always returns a failover-triggering HTTP 503.
+	// Endpoint #1: always returns a failover-triggering HTTP 503.
 	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits1.Add(1)
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer srv1.Close()
 
-	// Upstream #2: always succeeds.
+	// Endpoint #2: always succeeds.
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits2.Add(1)
 		w.Header().Set("Content-Type", "application/json")
