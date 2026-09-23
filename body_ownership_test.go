@@ -1,4 +1,4 @@
-package rcpx
+package failnext
 
 import (
 	"context"
@@ -35,7 +35,7 @@ func TestRoundTrip_ClosesOriginalBodyWhenContextDoneBeforeHandoff(t *testing.T) 
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 	if !body.Closed() {
-		t.Fatal("expected rcpx to close original body before any base handoff")
+		t.Fatal("expected failnext to close original body before any base handoff")
 	}
 	assertCalls(t, base)
 }
@@ -73,7 +73,7 @@ func TestRoundTrip_ClosesOriginalBodyWhenAllCandidatesCooling(t *testing.T) {
 		t.Fatalf("expected ErrNoUsableEndpoint, got %v", err)
 	}
 	if !body.Closed() {
-		t.Fatal("expected rcpx to close original body when all candidates are cooling")
+		t.Fatal("expected failnext to close original body when all candidates are cooling")
 	}
 	assertCalls(t, base)
 }
@@ -105,7 +105,7 @@ func TestRoundTrip_ClosesOriginalBodyWhenAllEndpointsExternallyIneligible(t *tes
 		t.Fatalf("expected ErrNoUsableEndpoint, got %v", err)
 	}
 	if !body.Closed() {
-		t.Fatal("expected rcpx to close original body when all endpoints are externally ineligible")
+		t.Fatal("expected failnext to close original body when all endpoints are externally ineligible")
 	}
 	assertCalls(t, base)
 }
@@ -134,7 +134,7 @@ func TestRoundTrip_ClosesOriginalBodyWhenPreferredEndpointIsUnknown(t *testing.T
 		t.Fatalf("expected ErrUnknownEndpoint, got %v", err)
 	}
 	if !body.Closed() {
-		t.Fatal("expected rcpx to close original body when preferred endpoint is unknown")
+		t.Fatal("expected failnext to close original body when preferred endpoint is unknown")
 	}
 	assertCalls(t, base)
 }
@@ -179,7 +179,7 @@ func TestRoundTrip_ClosesBodyReturnedWithGetBodyError(t *testing.T) {
 		t.Fatalf("expected replay error, got %v", err)
 	}
 	if !fresh.Closed() {
-		t.Fatal("expected rcpx to close fresh body returned with GetBody error")
+		t.Fatal("expected failnext to close fresh body returned with GetBody error")
 	}
 	if len(calls) != 1 || calls[0] != u1 {
 		t.Fatalf("unexpected physical attempts: %v", calls)
@@ -233,7 +233,7 @@ func TestRoundTrip_ClosesFreshReplayBodyWhenCanceledBeforeHandoff(t *testing.T) 
 		t.Fatal("expected GetBody to create a fresh body")
 	}
 	if !fresh.Closed() {
-		t.Fatal("expected rcpx to close fresh replay body before base handoff")
+		t.Fatal("expected failnext to close fresh replay body before base handoff")
 	}
 	if len(calls) != 1 || calls[0] != u1 {
 		t.Fatalf("unexpected physical attempts: %v", calls)

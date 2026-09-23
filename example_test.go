@@ -1,4 +1,4 @@
-package rcpx_test
+package failnext_test
 
 import (
 	"bytes"
@@ -10,7 +10,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 
-	"github.com/yermakovsa/rcpx"
+	"github.com/yermakovsa/failnext"
 )
 
 func ExampleNew_failover() {
@@ -34,8 +34,8 @@ func ExampleNew_failover() {
 	}))
 	defer srv2.Close()
 
-	rt, err := rcpx.New(rcpx.Config{
-		Endpoints: []rcpx.Endpoint{
+	rt, err := failnext.New(failnext.Config{
+		Endpoints: []failnext.Endpoint{
 			{ID: "primary", URL: srv1.URL},
 			{ID: "backup", URL: srv2.URL},
 		}, // priority order
@@ -47,7 +47,7 @@ func ExampleNew_failover() {
 	httpClient := &http.Client{Transport: rt}
 
 	// JSON-RPC reads use POST, so allow this logical read to cross endpoints.
-	ctx := rcpx.WithFailoverAllowed(context.Background())
+	ctx := failnext.WithFailoverAllowed(context.Background())
 	req := jsonRPCRequest(ctx, srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
 
 	resp, err := httpClient.Do(req)
@@ -73,8 +73,8 @@ func ExampleFailoverError() {
 	errPrimary := errors.New("primary transport failure")
 	errBackup := errors.New("backup transport failure")
 
-	rt, err := rcpx.New(rcpx.Config{
-		Endpoints: []rcpx.Endpoint{
+	rt, err := failnext.New(failnext.Config{
+		Endpoints: []failnext.Endpoint{
 			{ID: "primary", URL: "https://primary.example/rpc"},
 			{ID: "backup", URL: "https://backup.example/rpc"},
 		},
@@ -99,7 +99,7 @@ func ExampleFailoverError() {
 	}
 	_, err = rt.RoundTrip(req)
 
-	var fe *rcpx.FailoverError
+	var fe *failnext.FailoverError
 	if !errors.As(err, &fe) {
 		panic("expected FailoverError")
 	}
@@ -132,8 +132,8 @@ func ExampleWithFailoverAllowed() {
 	}))
 	defer srv2.Close()
 
-	rt, err := rcpx.New(rcpx.Config{
-		Endpoints: []rcpx.Endpoint{
+	rt, err := failnext.New(failnext.Config{
+		Endpoints: []failnext.Endpoint{
 			{ID: "primary", URL: srv1.URL},
 			{ID: "backup", URL: srv2.URL},
 		},
@@ -146,7 +146,7 @@ func ExampleWithFailoverAllowed() {
 
 	// The operation is a read, but JSON-RPC uses POST. Mark this logical read as
 	// safe to continue across configured endpoints.
-	ctx := rcpx.WithFailoverAllowed(context.Background())
+	ctx := failnext.WithFailoverAllowed(context.Background())
 	req := jsonRPCRequest(ctx, srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
 
 	resp, err := httpClient.Do(req)
@@ -171,8 +171,8 @@ func ExampleWithFailoverDenied() {
 	var physicalAttempts atomic.Int32
 	primaryErr := errors.New("primary transport failure")
 
-	rt, err := rcpx.New(rcpx.Config{
-		Endpoints: []rcpx.Endpoint{
+	rt, err := failnext.New(failnext.Config{
+		Endpoints: []failnext.Endpoint{
 			{ID: "primary", URL: "https://primary.example/rpc"},
 			{ID: "backup", URL: "https://backup.example/rpc"},
 		},
@@ -193,12 +193,12 @@ func ExampleWithFailoverDenied() {
 
 	// A broad parent context may allow failover for surrounding reads. Derive an
 	// explicit deny for a write so the write cannot cross endpoints.
-	parent := rcpx.WithFailoverAllowed(context.Background())
-	writeCtx := rcpx.WithFailoverDenied(parent)
+	parent := failnext.WithFailoverAllowed(context.Background())
+	writeCtx := failnext.WithFailoverDenied(parent)
 	req := jsonRPCRequest(writeCtx, "https://logical.example/rpc", `{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0xdeadbeef"]}`)
 
 	_, err = rt.RoundTrip(req)
-	var fe *rcpx.FailoverError
+	var fe *failnext.FailoverError
 	if !errors.As(err, &fe) {
 		panic("expected FailoverError")
 	}
@@ -227,12 +227,12 @@ func ExampleNew_cooldownDisabled() {
 	}))
 	defer srv2.Close()
 
-	rt, err := rcpx.New(rcpx.Config{
-		Endpoints: []rcpx.Endpoint{
+	rt, err := failnext.New(failnext.Config{
+		Endpoints: []failnext.Endpoint{
 			{ID: "primary", URL: srv1.URL},
 			{ID: "backup", URL: srv2.URL},
 		},
-		Cooldown: rcpx.CooldownConfig{Disabled: true},
+		Cooldown: failnext.CooldownConfig{Disabled: true},
 	})
 	if err != nil {
 		panic(err)
@@ -241,7 +241,7 @@ func ExampleNew_cooldownDisabled() {
 	httpClient := &http.Client{Transport: rt}
 
 	doCall := func() error {
-		ctx := rcpx.WithFailoverAllowed(context.Background())
+		ctx := failnext.WithFailoverAllowed(context.Background())
 		req := jsonRPCRequest(ctx, srv1.URL, `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
 		resp, err := httpClient.Do(req)
 		if err != nil {
@@ -251,7 +251,7 @@ func ExampleNew_cooldownDisabled() {
 		return nil
 	}
 
-	// With cooldown disabled, rcpx still tries srv1 first on every request.
+	// With cooldown disabled, failnext still tries srv1 first on every request.
 	if err := doCall(); err != nil {
 		panic(err)
 	}

@@ -13,23 +13,23 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 
-	"github.com/yermakovsa/rcpx"
+	"github.com/yermakovsa/failnext"
 )
 
 type resultRecorderKey struct{}
 
 type resultRecorder struct {
 	mu       sync.Mutex
-	endpoint rcpx.EndpointID
+	endpoint failnext.EndpointID
 }
 
-func (r *resultRecorder) record(endpoint rcpx.EndpointID) {
+func (r *resultRecorder) record(endpoint failnext.EndpointID) {
 	r.mu.Lock()
 	r.endpoint = endpoint
 	r.mu.Unlock()
 }
 
-func (r *resultRecorder) result() (rcpx.EndpointID, bool) {
+func (r *resultRecorder) result() (failnext.EndpointID, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -55,18 +55,18 @@ func main() {
 		log.Fatal("set ETH_RPC_URL to a working Ethereum HTTP RPC endpoint")
 	}
 
-	tr, err := rcpx.New(rcpx.Config{
-		Endpoints: []rcpx.Endpoint{
+	tr, err := failnext.New(failnext.Config{
+		Endpoints: []failnext.Endpoint{
 			{ID: "primary", URL: primaryURL},
 			{ID: "backup", URL: backupURL},
 		},
 
-		OnEvent: func(ctx context.Context, event rcpx.Event) {
-			if event.Kind == rcpx.EventAttempt {
+		OnEvent: func(ctx context.Context, event failnext.Event) {
+			if event.Kind == failnext.EventAttempt {
 				fmt.Printf("attempt %d: %s\n", event.Attempt, event.Endpoint)
 			}
 
-			if event.Kind != rcpx.EventResult || event.Endpoint == "" {
+			if event.Kind != failnext.EventResult || event.Endpoint == "" {
 				return
 			}
 
@@ -95,7 +95,7 @@ func main() {
 
 	firstCtx, cancelFirst := context.WithTimeout(context.Background(), 10*time.Second)
 	firstCtx, recorder := withResultRecorder(firstCtx)
-	firstCtx = rcpx.WithFailoverAllowed(firstCtx)
+	firstCtx = failnext.WithFailoverAllowed(firstCtx)
 
 	blockNumber, err := eth.BlockNumber(firstCtx)
 	cancelFirst()
@@ -113,11 +113,11 @@ func main() {
 	secondCtx, cancelSecond := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelSecond()
 
-	secondCtx = rcpx.WithFailoverAllowed(secondCtx)
+	secondCtx = failnext.WithFailoverAllowed(secondCtx)
 
 	// Prefer the provider that completed the first read.
 	// Preference is not pinning or a consistency guarantee.
-	secondCtx = rcpx.WithPreferredEndpoint(secondCtx, preferred)
+	secondCtx = failnext.WithPreferredEndpoint(secondCtx, preferred)
 
 	header, err := eth.HeaderByNumber(
 		secondCtx,

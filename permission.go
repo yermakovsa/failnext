@@ -1,4 +1,4 @@
-package rcpx
+package failnext
 
 import (
 	"context"
@@ -21,14 +21,14 @@ const (
 type failoverPermissionKey struct{}
 
 // WithFailoverAllowed marks the logical operation carried by ctx as permitted
-// to continue across configured endpoints. A later rcpx permission value on a
+// to continue across configured endpoints. A later failnext permission value on a
 // derived context overrides this value.
 func WithFailoverAllowed(ctx context.Context) context.Context {
 	return context.WithValue(ctx, failoverPermissionKey{}, PermissionAllow)
 }
 
 // WithFailoverDenied marks the logical operation carried by ctx as not permitted
-// to continue across configured endpoints. A later rcpx permission value on a
+// to continue across configured endpoints. A later failnext permission value on a
 // derived context overrides this value.
 func WithFailoverDenied(ctx context.Context) context.Context {
 	return context.WithValue(ctx, failoverPermissionKey{}, PermissionDeny)

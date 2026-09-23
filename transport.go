@@ -1,4 +1,4 @@
-package rcpx
+package failnext
 
 import (
 	"context"
@@ -47,12 +47,12 @@ type httpStatusError struct {
 
 func (e *httpStatusError) Error() string {
 	if e == nil {
-		return "rcpx: upstream http error"
+		return "failnext: upstream http error"
 	}
 	if e.upstream != "" {
-		return fmt.Sprintf("rcpx: upstream %s returned HTTP %d", e.upstream, e.code)
+		return fmt.Sprintf("failnext: upstream %s returned HTTP %d", e.upstream, e.code)
 	}
-	return fmt.Sprintf("rcpx: upstream returned HTTP %d", e.code)
+	return fmt.Sprintf("failnext: upstream returned HTTP %d", e.code)
 }
 
 type nilResponseError struct {
@@ -61,12 +61,12 @@ type nilResponseError struct {
 
 func (e *nilResponseError) Error() string {
 	if e == nil {
-		return "rcpx: upstream returned nil response"
+		return "failnext: upstream returned nil response"
 	}
 	if e.upstream != "" {
-		return fmt.Sprintf("rcpx: upstream %s returned nil response", e.upstream)
+		return fmt.Sprintf("failnext: upstream %s returned nil response", e.upstream)
 	}
-	return "rcpx: upstream returned nil response"
+	return "failnext: upstream returned nil response"
 }
 
 func closeResponseBody(resp *http.Response) {
@@ -163,7 +163,7 @@ func (t *Transport) notifyResult(ctx context.Context, endpoint EndpointID, resp 
 
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req == nil {
-		return nil, errors.New("rcpx: nil request")
+		return nil, errors.New("failnext: nil request")
 	}
 
 	ctx := req.Context()
@@ -332,7 +332,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 
 		// A non-trigger HTTP response is immediately caller-visible. Any older
-		// retained fallback response is superseded and no longer owned by rcpx.
+		// retained fallback response is superseded and no longer owned by failnext.
 		if rerr == nil && !t.cfg.isTriggerStatus(status) {
 			if err := ctx.Err(); err != nil {
 				closeAttemptResp()

@@ -1,4 +1,4 @@
-package rcpx
+package failnext
 
 import (
 	"sync"
@@ -12,7 +12,7 @@ type cooldownTracker struct {
 	duration  time.Duration
 
 	mu        sync.Mutex
-	consec    []int       // consecutive rcpx-defined availability failures
+	consec    []int       // consecutive failnext-defined availability failures
 	coolingTo []time.Time // if now is before coolingTo[i], endpoint i is cooling down
 }
 
@@ -79,7 +79,7 @@ func (c *cooldownTracker) recordNonFailure(idx int) {
 	c.consec[idx] = 0
 }
 
-// recordFailure records one rcpx-defined availability failure. An attempt that
+// recordFailure records one failnext-defined availability failure. An attempt that
 // was admitted before a concurrent cooldown transition may finish while the
 // endpoint is already cooling; its evidence is recorded without extending the
 // active fixed-duration cooldown.

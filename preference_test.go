@@ -1,4 +1,4 @@
-package rcpx
+package failnext
 
 import (
 	"context"
@@ -182,7 +182,7 @@ func TestRoundTrip_PreferenceUsesCapturedEligibilityAfterStateChanges(t *testing
 		calls = append(calls, req.URL.String())
 		switch req.URL.String() {
 		case u2:
-			// External application state changes only after rcpx has captured
+			// External application state changes only after failnext has captured
 			// eligibility for this logical request.
 			disableEndpoint3 = true
 			return nil, io.EOF
