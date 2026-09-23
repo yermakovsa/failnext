@@ -1,13 +1,13 @@
-module github.com/yermakovsa/rcpx/examples/goethereum
+module github.com/yermakovsa/failnext/examples/goethereum
 
 go 1.24.0
 
 require (
 	github.com/ethereum/go-ethereum v1.16.8
-	github.com/yermakovsa/rcpx v0.1.0
+	github.com/yermakovsa/failnext v0.1.0
 )
 
-replace github.com/yermakovsa/rcpx => ../../
+replace github.com/yermakovsa/failnext => ../../
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect

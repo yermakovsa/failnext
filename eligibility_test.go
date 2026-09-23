@@ -1,4 +1,4 @@
-package rcpx
+package failnext
 
 import (
 	"io"

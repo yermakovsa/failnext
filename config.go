@@ -1,4 +1,4 @@
-package rcpx
+package failnext
 
 import (
 	"context"
@@ -18,7 +18,7 @@ type Endpoint struct {
 	URL string
 }
 
-// EventKind identifies one kind of rcpx observability event.
+// EventKind identifies one kind of failnext observability event.
 type EventKind uint8
 
 const (
@@ -28,7 +28,7 @@ const (
 	EventResult
 )
 
-// Event describes one observable rcpx event for a logical request.
+// Event describes one observable failnext event for a logical request.
 type Event struct {
 	Kind EventKind
 
@@ -39,10 +39,10 @@ type Event struct {
 	Err        error
 }
 
-// Config configures an rcpx RoundTripper.
+// Config configures an failnext RoundTripper.
 //
 // Endpoints define the fixed priority order for physical attempts. Each endpoint
-// URL is a complete destination; rcpx does not join request paths or queries.
+// URL is a complete destination; failnext does not join request paths or queries.
 type Config struct {
 	Endpoints []Endpoint
 
@@ -52,7 +52,7 @@ type Config struct {
 	// PermissionPolicy classifies whether a logical request may continue to
 	// another configured endpoint. It is evaluated at most once per RoundTrip
 	// when no explicit request-scoped permission is present. It may be called
-	// concurrently for different requests and is invoked outside rcpx internal
+	// concurrently for different requests and is invoked outside failnext internal
 	// cooldown/state locks. It must be concurrency-safe if it shares mutable state
 	// and should return promptly. It must not mutate the request or consume, close,
 	// or replace Request.Body.
@@ -60,7 +60,7 @@ type Config struct {
 
 	// Eligible reports whether a configured endpoint may participate in a logical
 	// request. If nil, all configured endpoints are externally eligible. It may
-	// be called concurrently for different requests and is invoked outside rcpx
+	// be called concurrently for different requests and is invoked outside failnext
 	// internal cooldown/state locks. It must be concurrency-safe if it shares
 	// mutable state and should return promptly.
 	Eligible func(EndpointID) bool
@@ -73,11 +73,11 @@ type Config struct {
 	// that trigger failover consideration.
 	AdditionalTriggerStatusCodes []int
 
-	// OnEvent, if non-nil, is called synchronously for rcpx observability events.
+	// OnEvent, if non-nil, is called synchronously for failnext observability events.
 	// Events for one logical request are delivered in causal order. Different
 	// logical requests may invoke the callback concurrently, so callbacks that
 	// share mutable state must be concurrency-safe and should return promptly.
-	// OnEvent is invoked outside rcpx internal cooldown/state locks. rcpx does
+	// OnEvent is invoked outside failnext internal cooldown/state locks. failnext does
 	// not recover callback panics.
 	OnEvent func(context.Context, Event)
 }
@@ -126,7 +126,7 @@ type resolvedConfig struct {
 
 func resolveConfig(cfg Config) (resolvedConfig, error) {
 	if len(cfg.Endpoints) == 0 {
-		return resolvedConfig{}, fmt.Errorf("rcpx: no endpoints")
+		return resolvedConfig{}, fmt.Errorf("failnext: no endpoints")
 	}
 
 	endpoints := make([]resolvedEndpoint, 0, len(cfg.Endpoints))
@@ -134,28 +134,28 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 
 	for i, endpoint := range cfg.Endpoints {
 		if endpoint.ID == "" {
-			return resolvedConfig{}, fmt.Errorf("rcpx: invalid endpoint at index %d: empty id", i)
+			return resolvedConfig{}, fmt.Errorf("failnext: invalid endpoint at index %d: empty id", i)
 		}
 		if _, exists := endpointIndex[endpoint.ID]; exists {
-			return resolvedConfig{}, fmt.Errorf("rcpx: duplicate endpoint id %q", endpoint.ID)
+			return resolvedConfig{}, fmt.Errorf("failnext: duplicate endpoint id %q", endpoint.ID)
 		}
 
 		u, err := url.Parse(endpoint.URL)
 		if err != nil {
-			return resolvedConfig{}, fmt.Errorf("rcpx: invalid endpoint %q url %q: %w", endpoint.ID, endpoint.URL, err)
+			return resolvedConfig{}, fmt.Errorf("failnext: invalid endpoint %q url %q: %w", endpoint.ID, endpoint.URL, err)
 		}
 
 		if !u.IsAbs() {
-			return resolvedConfig{}, fmt.Errorf("rcpx: invalid endpoint %q url %q: must be absolute", endpoint.ID, endpoint.URL)
+			return resolvedConfig{}, fmt.Errorf("failnext: invalid endpoint %q url %q: must be absolute", endpoint.ID, endpoint.URL)
 		}
 		if u.Scheme != "http" && u.Scheme != "https" {
-			return resolvedConfig{}, fmt.Errorf("rcpx: invalid endpoint %q url %q: unsupported scheme %q", endpoint.ID, endpoint.URL, u.Scheme)
+			return resolvedConfig{}, fmt.Errorf("failnext: invalid endpoint %q url %q: unsupported scheme %q", endpoint.ID, endpoint.URL, u.Scheme)
 		}
 		if u.Host == "" {
-			return resolvedConfig{}, fmt.Errorf("rcpx: invalid endpoint %q url %q: missing host", endpoint.ID, endpoint.URL)
+			return resolvedConfig{}, fmt.Errorf("failnext: invalid endpoint %q url %q: missing host", endpoint.ID, endpoint.URL)
 		}
 		if strings.Contains(endpoint.URL, "#") {
-			return resolvedConfig{}, fmt.Errorf("rcpx: invalid endpoint %q url %q: fragments are not allowed", endpoint.ID, endpoint.URL)
+			return resolvedConfig{}, fmt.Errorf("failnext: invalid endpoint %q url %q: fragments are not allowed", endpoint.ID, endpoint.URL)
 		}
 
 		endpointIndex[endpoint.ID] = len(endpoints)
@@ -196,14 +196,14 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 
 func resolveCooldown(cc CooldownConfig) (effectiveCooldown, error) {
 	if cc.Threshold < 0 {
-		return effectiveCooldown{}, fmt.Errorf("rcpx: invalid Cooldown.Threshold %d", cc.Threshold)
+		return effectiveCooldown{}, fmt.Errorf("failnext: invalid Cooldown.Threshold %d", cc.Threshold)
 	}
 	if cc.Duration < 0 {
-		return effectiveCooldown{}, fmt.Errorf("rcpx: invalid Cooldown.Duration %s", cc.Duration)
+		return effectiveCooldown{}, fmt.Errorf("failnext: invalid Cooldown.Duration %s", cc.Duration)
 	}
 	if cc.Disabled {
 		if cc.Threshold != 0 || cc.Duration != 0 {
-			return effectiveCooldown{}, fmt.Errorf("rcpx: invalid Cooldown: Disabled cannot be combined with Threshold or Duration")
+			return effectiveCooldown{}, fmt.Errorf("failnext: invalid Cooldown: Disabled cannot be combined with Threshold or Duration")
 		}
 		return effectiveCooldown{enabled: false}, nil
 	}
@@ -234,7 +234,7 @@ func resolveTriggerStatusCodes(additional []int) (map[int]struct{}, error) {
 
 	for i, code := range additional {
 		if !validHTTPStatusCode(code) {
-			return nil, fmt.Errorf("rcpx: invalid AdditionalTriggerStatusCodes[%d] %d", i, code)
+			return nil, fmt.Errorf("failnext: invalid AdditionalTriggerStatusCodes[%d] %d", i, code)
 		}
 		statuses[code] = struct{}{}
 	}

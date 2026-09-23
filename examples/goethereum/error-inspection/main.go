@@ -11,21 +11,21 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 
-	"github.com/yermakovsa/rcpx"
+	"github.com/yermakovsa/failnext"
 )
 
 func main() {
 	// Both endpoints are intentionally unavailable so every attempt fails.
-	endpoints := []rcpx.Endpoint{
+	endpoints := []failnext.Endpoint{
 		{ID: "primary", URL: "http://127.0.0.1:65534"},
 		{ID: "backup", URL: "http://127.0.0.1:65533"},
 	}
 
-	tr, err := rcpx.New(rcpx.Config{
+	tr, err := failnext.New(failnext.Config{
 		Endpoints: endpoints,
 
-		OnEvent: func(_ context.Context, event rcpx.Event) {
-			if event.Kind == rcpx.EventAttempt && event.Err != nil {
+		OnEvent: func(_ context.Context, event failnext.Event) {
+			if event.Kind == failnext.EventAttempt && event.Err != nil {
 				fmt.Printf(
 					"attempt %d: %s failed\n",
 					event.Attempt,
@@ -56,12 +56,12 @@ func main() {
 	defer cancel()
 
 	// JSON-RPC reads use POST, so allow this read to try another provider.
-	_, err = eth.BlockNumber(rcpx.WithFailoverAllowed(ctx))
+	_, err = eth.BlockNumber(failnext.WithFailoverAllowed(ctx))
 	if err == nil {
 		log.Fatal("expected request to fail")
 	}
 
-	var failoverErr *rcpx.FailoverError
+	var failoverErr *failnext.FailoverError
 	if !errors.As(err, &failoverErr) {
 		log.Fatal(err)
 	}

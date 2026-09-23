@@ -1,4 +1,4 @@
-// Package rcpx provides a specialized HTTP failover RoundTripper for applications
+// Package failnext provides a specialized HTTP failover RoundTripper for applications
 // that use a small, ordered set of fixed endpoint destinations.
 //
 // A Transport selects a configured endpoint for each physical attempt. Configured
@@ -8,14 +8,14 @@
 //
 // Cross-endpoint continuation is separate from endpoint selection. Applications
 // can allow or deny it through request context or PermissionPolicy. Later
-// body-bearing attempts use Request.GetBody; rcpx does not buffer bodies to make
+// body-bearing attempts use Request.GetBody; failnext does not buffer bodies to make
 // them replayable.
 //
-// rcpx operates at the HTTP transport layer. It does not inspect protocol payloads
+// failnext operates at the HTTP transport layer. It does not inspect protocol payloads
 // or provide generic load balancing, health checking, retry scheduling, or
 // destination-specific request rewriting. Use a Transport as http.Client.Transport;
 // Base handles each physical attempt.
-package rcpx
+package failnext
 
 import "time"
 

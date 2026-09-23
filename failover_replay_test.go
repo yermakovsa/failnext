@@ -1,4 +1,4 @@
-package rcpx
+package failnext
 
 import (
 	"context"
@@ -338,7 +338,7 @@ func TestRoundTrip_GetBodyReturnedBodyIsClosedWhenGetBodyFails(t *testing.T) {
 		t.Fatalf("expected replay error through FailoverError, got %v", err)
 	}
 	if !fresh.Closed() {
-		t.Fatal("expected rcpx to close body returned with GetBody error")
+		t.Fatal("expected failnext to close body returned with GetBody error")
 	}
 	if len(calls) != 1 || calls[0] != u1 {
 		t.Fatalf("unexpected physical attempts: %v", calls)
@@ -392,10 +392,10 @@ func TestRoundTrip_CancellationAfterReplayConstructionClosesReplayAndRetainedRes
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 	if !fresh.Closed() {
-		t.Fatal("expected rcpx to close fresh replay body before base handoff")
+		t.Fatal("expected failnext to close fresh replay body before base handoff")
 	}
 	if !retainedBody.Closed() {
-		t.Fatal("expected rcpx to close retained response when cancellation wins")
+		t.Fatal("expected failnext to close retained response when cancellation wins")
 	}
 	if len(calls) != 1 || calls[0] != u1 {
 		t.Fatalf("unexpected physical attempts: %v", calls)

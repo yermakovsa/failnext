@@ -1,4 +1,4 @@
-package rcpx
+package failnext
 
 import (
 	"context"
@@ -23,7 +23,7 @@ func TestRoundTrip_HTTP500_IsTerminal_NoFailover(t *testing.T) {
 			u1: {
 				{resp: &http.Response{StatusCode: 500, Body: respBody}, err: nil},
 			},
-			// Intentionally omit u2. If rcpx fails over incorrectly, scriptRT will error on an unexpected call.
+			// Intentionally omit u2. If failnext fails over incorrectly, scriptRT will error on an unexpected call.
 		},
 	}
 
@@ -152,7 +152,7 @@ func TestRoundTrip_HTTP200_WithJSONRPCErrorPayload_IsTerminal_NoFailover(t *test
 	u1 := "https://u1.test/rpc"
 	u2 := "https://u2.test/rpc"
 
-	// rcpx must not interpret the JSON-RPC payload; HTTP 200 is non-triggering and terminal.
+	// failnext must not interpret the JSON-RPC payload; HTTP 200 is non-triggering and terminal.
 	jsonrpcErrResp := `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"boom"}}`
 
 	base := &scriptRT{

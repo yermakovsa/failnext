@@ -10,7 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 
-	"github.com/yermakovsa/rcpx"
+	"github.com/yermakovsa/failnext"
 )
 
 func main() {
@@ -22,8 +22,8 @@ func main() {
 		log.Fatal("set ETH_RPC_URL to a working Ethereum HTTP RPC endpoint")
 	}
 
-	tr, err := rcpx.New(rcpx.Config{
-		Endpoints: []rcpx.Endpoint{
+	tr, err := failnext.New(failnext.Config{
+		Endpoints: []failnext.Endpoint{
 			{ID: "primary", URL: primaryURL},
 			{ID: "backup", URL: backupURL},
 		},
@@ -51,7 +51,7 @@ func main() {
 
 	// JSON-RPC reads use POST, so explicitly allow this read to continue
 	// from the unavailable primary to the backup provider.
-	readCtx := rcpx.WithFailoverAllowed(ctx)
+	readCtx := failnext.WithFailoverAllowed(ctx)
 
 	blockNumber, err := eth.BlockNumber(readCtx)
 	if err != nil {
@@ -61,6 +61,6 @@ func main() {
 	log.Printf("block number: %d", blockNumber)
 
 	// Disable failover for writes.
-	// writeCtx := rcpx.WithFailoverDenied(readCtx)
+	// writeCtx := failnext.WithFailoverDenied(readCtx)
 	// err = eth.SendTransaction(writeCtx, tx)
 }

@@ -13,19 +13,19 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 
-	"github.com/yermakovsa/rcpx"
+	"github.com/yermakovsa/failnext"
 )
 
 func main() {
-	endpoints := []rcpx.Endpoint{
+	endpoints := []failnext.Endpoint{
 		{ID: "primary", URL: "http://127.0.0.1:65534"},
 		{ID: "backup", URL: "http://127.0.0.1:65533"},
 	}
 
-	tr, err := rcpx.New(rcpx.Config{
+	tr, err := failnext.New(failnext.Config{
 		Endpoints: endpoints,
-		OnEvent: func(_ context.Context, event rcpx.Event) {
-			if event.Kind == rcpx.EventAttempt {
+		OnEvent: func(_ context.Context, event failnext.Event) {
+			if event.Kind == failnext.EventAttempt {
 				fmt.Printf("attempt %d: %s\n", event.Attempt, event.Endpoint)
 			}
 		},
@@ -52,10 +52,10 @@ func main() {
 	defer cancel()
 
 	// The parent context allows failover.
-	allowedCtx := rcpx.WithFailoverAllowed(ctx)
+	allowedCtx := failnext.WithFailoverAllowed(ctx)
 
 	// Disable failover for writes.
-	writeCtx := rcpx.WithFailoverDenied(allowedCtx)
+	writeCtx := failnext.WithFailoverDenied(allowedCtx)
 
 	// Dummy transaction used only to exercise SendTransaction.
 	// Both configured endpoints are intentionally unavailable.
