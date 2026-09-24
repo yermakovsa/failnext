@@ -121,7 +121,7 @@ func (t *Transport) considerationOrder(ctx context.Context) ([]int, error) {
 	return order, nil
 }
 
-func (t *Transport) nextAdmittedCandidate(ctx context.Context, order []int, start int) (idx int, next int, ok bool) {
+func (t *Transport) nextAdmittedCandidate(ctx context.Context, order []int, start int) (idx int, nextPos int, ok bool) {
 	for pos := start; pos < len(order); pos++ {
 		idx := order[pos]
 		now := t.now()
@@ -167,9 +167,9 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	ctx := req.Context()
-	originalBodyOwned := req.Body != nil
+	ownsOriginalBody := req.Body != nil
 	defer func() {
-		if originalBodyOwned {
+		if ownsOriginalBody {
 			req.Body.Close()
 		}
 	}()
@@ -197,9 +197,9 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	attemptNo := 0
 	attemptBody := req.Body
 	var replayBody io.ReadCloser
-	var replayBodyOwned bool
+	var ownsReplayBody bool
 	defer func() {
-		if replayBodyOwned && replayBody != nil {
+		if ownsReplayBody && replayBody != nil {
 			replayBody.Close()
 		}
 	}()
@@ -235,6 +235,8 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	defer closeAttemptResp()
 
+	// Final response ownership transfers to the caller only after EventResult
+	// returns, so a callback panic remains covered by deferred cleanup.
 	returnAttemptResponse := func(endpoint EndpointID) (*http.Response, error) {
 		resp := attemptResp
 		t.notifyResult(ctx, endpoint, resp, nil)
@@ -281,16 +283,18 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		attemptNo++
 		endpoint := t.cfg.endpoints[idx]
-		areq := cloneRequestForEndpoint(req, endpoint.url, attemptBody)
+		attemptReq := cloneRequestForEndpoint(req, endpoint.url, attemptBody)
 
+		// Base owns the request body once the physical attempt is handed off, so
+		// clear failnext's cleanup responsibility immediately before RoundTrip.
 		if attemptNo == 1 {
-			originalBodyOwned = false
+			ownsOriginalBody = false
 		} else {
-			replayBodyOwned = false
+			ownsReplayBody = false
 		}
 
-		resp, rerr := t.cfg.base.RoundTrip(areq)
-		resp, rerr = normalizeBaseRoundTrip(resp, rerr, endpoint.raw)
+		resp, attemptErr := t.cfg.base.RoundTrip(attemptReq)
+		resp, attemptErr = normalizeBaseRoundTrip(resp, attemptErr, endpoint.raw)
 		attemptResp = resp
 
 		status := 0
@@ -302,7 +306,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			Endpoint:   endpoint.id,
 			Attempt:    attemptNo,
 			StatusCode: status,
-			Err:        rerr,
+			Err:        attemptErr,
 		})
 
 		// The logical request context is authoritative for cancellation. A base
@@ -317,23 +321,23 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// Cooldown evidence is classified from the physical outcome before any
 		// continuation gate is considered. Trigger configuration does not affect it.
 		if t.cooldown != nil {
-			if rerr != nil || isCooldownFailureStatus(status) {
+			if attemptErr != nil || isCooldownFailureStatus(status) {
 				t.cooldown.recordFailure(t.now(), idx)
 			} else {
 				t.cooldown.recordNonFailure(idx)
 			}
 		}
 
-		if rerr != nil {
+		if attemptErr != nil {
 			attempts = append(attempts, AttemptError{
 				Endpoint: endpoint.id,
-				Err:      rerr,
+				Err:      attemptErr,
 			})
 		}
 
 		// A non-trigger HTTP response is immediately caller-visible. Any older
 		// retained fallback response is superseded and no longer owned by failnext.
-		if rerr == nil && !t.cfg.isTriggerStatus(status) {
+		if attemptErr == nil && !t.cfg.isTriggerStatus(status) {
 			if err := ctx.Err(); err != nil {
 				closeAttemptResp()
 				closeRetained()
@@ -357,7 +361,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			attemptResp = nil
 		}
 
-		cause := rerr
+		cause := attemptErr
 		if cause == nil {
 			cause = &httpStatusError{code: status, upstream: endpoint.raw}
 		}
@@ -396,7 +400,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 				}
 
 				replayBody = nextBody
-				replayBodyOwned = nextBody != nil && nextBody != http.NoBody
+				ownsReplayBody = nextBody != nil && nextBody != http.NoBody
 				attemptBody = nextBody
 
 				if err := ctx.Err(); err != nil {
