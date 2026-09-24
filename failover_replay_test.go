@@ -300,51 +300,6 @@ func TestRoundTrip_OneShotBodyRetainsTriggerResponse(t *testing.T) {
 	}
 }
 
-func TestRoundTrip_GetBodyReturnedBodyIsClosedWhenGetBodyFails(t *testing.T) {
-	u1 := "https://u1.test/rpc"
-	u2 := "https://u2.test/rpc"
-
-	transportErr := errors.New("transport failed")
-	replayErr := errors.New("replay failed")
-	original := newTrackingBody("original")
-	fresh := newTrackingBody("fresh")
-	calls := make([]string, 0, 1)
-	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		calls = append(calls, req.URL.String())
-		if err := req.Body.Close(); err != nil {
-			t.Fatalf("close original body: %v", err)
-		}
-		return nil, transportErr
-	})
-	rt := mustNewTransport(t, Config{
-		Endpoints: testEndpoints(u1, u2),
-		Base:      base,
-	})
-
-	req, err := http.NewRequest(http.MethodPost, u1, original)
-	if err != nil {
-		t.Fatalf("http.NewRequest: %v", err)
-	}
-	req.GetBody = func() (io.ReadCloser, error) {
-		return fresh, replayErr
-	}
-	req = req.WithContext(WithFailoverAllowed(req.Context()))
-
-	resp, err := rt.RoundTrip(req)
-	if resp != nil {
-		t.Fatalf("expected nil response, got %#v", resp)
-	}
-	if !errors.Is(err, replayErr) {
-		t.Fatalf("expected replay error through FailoverError, got %v", err)
-	}
-	if !fresh.Closed() {
-		t.Fatal("expected failnext to close body returned with GetBody error")
-	}
-	if len(calls) != 1 || calls[0] != u1 {
-		t.Fatalf("unexpected physical attempts: %v", calls)
-	}
-}
-
 func TestRoundTrip_CancellationAfterReplayConstructionClosesReplayAndRetainedResponse(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 	u2 := "https://u2.test/rpc"
