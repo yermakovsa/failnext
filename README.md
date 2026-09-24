@@ -1,72 +1,24 @@
 # failnext
 
-`failnext` is a Go `http.RoundTripper` for ordered failover across a small set of fixed HTTP endpoints.
+**fail → next**
 
-Use it when your application already uses `http.Client` and has a clear primary/backup order for a few provider or RPC endpoints. A primary use case is go-ethereum over HTTP JSON-RPC, but `failnext` itself is protocol-neutral: it does not parse JSON-RPC or decide which application operations are safe to repeat.
+Client-side failover for Go applications with a small, fixed set of HTTP or RPC providers.
 
-**Note:** `failnext` was previously named `rcpx`.
+* **Primary RPC unavailable?** Try the next provider.
+* **One RPC is lagging or degraded?** Skip any provider your application decides not to use.
+* **Want reads to fail over, but not writes?** Keep writes from failing over to another provider.
+* **Reading after a write?** Try the provider that handled the write first.
+* **Everything failed?** See which providers were tried and what went wrong.
 
-**`failnext` is failover, not load balancing.** Applications remain responsible for deciding when a logical operation may safely continue to another provider.
+A primary use case is [go-ethereum](https://github.com/ethereum/go-ethereum) over HTTP JSON-RPC, but `failnext` itself is protocol-neutral. It plugs into `http.Client` as an `http.RoundTripper`.
 
-## Installation
+`failnext` handles the mechanics of trying providers in order. Your application decides which operations may safely continue to another provider; `failnext` does not parse JSON-RPC or make that decision for you.
 
-```bash
-go get github.com/yermakovsa/failnext
-```
-
-The module requires Go 1.24.
+`failnext` is failover, not load balancing.
 
 ## Quick start
 
-Configure complete endpoint URLs and use the transport with a normal `http.Client`:
-
-```go
-package main
-
-import (
-	"log"
-	"net/http"
-
-	"github.com/yermakovsa/failnext"
-)
-
-func main() {
-	tr, err := failnext.New(failnext.Config{
-		Endpoints: []failnext.Endpoint{
-			{ID: "primary", URL: "https://rpc-a.example/rpc"},
-			{ID: "backup", URL: "https://rpc-b.example/rpc"},
-		},
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	client := &http.Client{Transport: tr}
-
-	req, err := http.NewRequest(
-		http.MethodGet,
-		"https://rpc-a.example/rpc",
-		nil,
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer resp.Body.Close()
-}
-```
-
-Endpoint order is priority order. If an admitted attempt fails with a failover-triggering outcome, `failnext` may continue to the next usable endpoint.
-
-Configured endpoint URLs are complete physical destinations. `failnext` does not treat them as base URLs or combine them with the incoming request path or query.
-
-## go-ethereum
-
-`failnext` can sit underneath go-ethereum through `rpc.WithHTTPClient`:
+Configure your providers in priority order and use `failnext` underneath go-ethereum through `rpc.WithHTTPClient`:
 
 ```go
 endpoints := []failnext.Endpoint{
@@ -78,7 +30,7 @@ tr, err := failnext.New(failnext.Config{
 	Endpoints: endpoints,
 })
 if err != nil {
-	log.Fatal(err)
+	return err
 }
 
 httpClient := &http.Client{Transport: tr}
@@ -89,40 +41,83 @@ rpcClient, err := rpc.DialOptions(
 	rpc.WithHTTPClient(httpClient),
 )
 if err != nil {
-	log.Fatal(err)
+	return err
 }
 defer rpcClient.Close()
 
 eth := ethclient.NewClient(rpcClient)
+
+// JSON-RPC reads use HTTP POST, so explicitly allow this read to fail over.
+ctx := failnext.WithFailoverAllowed(context.Background())
+
+blockNumber, err := eth.BlockNumber(ctx)
 ```
 
-### Basic failover for reads
+If the primary fails in a way that triggers failover, `failnext` can try the next provider.
 
-Ethereum JSON-RPC reads use HTTP `POST`, so the built-in `GET`/`HEAD` permission rule does not automatically allow them to cross providers.
+Ethereum JSON-RPC reads use HTTP `POST`, so `failnext` cannot tell from the HTTP method whether a read may safely be sent to another provider. It does not inspect JSON-RPC method names; your application makes that decision explicitly.
 
-When the application knows that a logical read may safely continue to another configured provider, allow it explicitly:
+See [`examples/goethereum/basic-failover`](examples/goethereum/basic-failover) for a complete runnable example.
+
+## Installation
+
+```bash
+go get github.com/yermakovsa/failnext
+```
+
+The module requires Go 1.24.
+
+> `failnext` was previously named `rcpx`.
+
+## When failnext fits
+
+`failnext` fits best when:
+
+* you have a small set of known HTTP or RPC providers;
+* those providers have a clear priority, such as primary and backup;
+* you want failover to happen inside your Go application;
+* your application decides which operations may safely fail over;
+* your application may need to skip providers it considers unavailable, lagging, or degraded;
+* some follow-up requests should try a previously used provider first.
+
+`failnext` plugs directly into `http.Client`, including go-ethereum over HTTP JSON-RPC.
+
+### When a proxy or gateway may fit better
+
+A proxy or gateway may be a better fit when you want provider failover and routing to be shared across multiple applications rather than handled inside each Go client.
+
+For example, when you need:
+
+* one shared RPC endpoint for many applications;
+* service discovery or dynamic load balancing;
+* active checks for provider health or blockchain lag;
+* centralized caching or routing rules;
+* provider selection to happen outside application code;
+* WebSocket failover.
+
+`failnext` is intentionally smaller. It keeps failover inside your Go application and works with a small, fixed set of configured HTTP or RPC providers.
+
+## Common patterns
+
+### Allow a read to fail over
+
+By default, `failnext` allows HTTP `GET` and `HEAD` requests to continue to another provider.
+
+JSON-RPC reads normally use `POST`, so your application must explicitly allow a read to fail over when it knows that operation is safe to repeat:
 
 ```go
-ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-defer cancel()
+ctx := failnext.WithFailoverAllowed(parent)
 
-readCtx := failnext.WithFailoverAllowed(ctx)
-
-blockNumber, err := eth.BlockNumber(readCtx)
-if err != nil {
-	log.Fatal(err)
-}
+blockNumber, err := eth.BlockNumber(ctx)
 ```
 
-`failnext` does not inspect the JSON-RPC method name. Whether an operation is safe to continue is application knowledge.
+Allowing failover only gives `failnext` permission to try another provider. It does not make the request replayable, make another provider eligible, bypass cooldown, or change which failures trigger failover.
 
-See [`examples/goethereum/basic-failover`](examples/goethereum/basic-failover) for a complete example.
+### Keep writes from failing over
 
-### Keep writes conservative
+Some operations should not be sent to another provider after the first attempt fails.
 
-A replayable HTTP request is not necessarily an operation that should execute against another provider.
-
-If a parent context broadly allows failover, derive an explicit deny for a sensitive operation:
+Even if failover is allowed by a parent context, you can explicitly disable it for a write:
 
 ```go
 allowedCtx := failnext.WithFailoverAllowed(ctx)
@@ -131,32 +126,91 @@ writeCtx := failnext.WithFailoverDenied(allowedCtx)
 err := eth.SendTransaction(writeCtx, tx)
 ```
 
-This keeps the write on its first admitted provider attempt even if that attempt fails.
+With failover denied, `failnext` will not try another provider for that operation.
+
+`failnext` does not inspect JSON-RPC method names or decide which operations are safe to repeat. Your application makes that decision.
+
+A replayable HTTP request is not necessarily an operation that should be sent to another provider.
 
 See [`examples/goethereum/conservative-write`](examples/goethereum/conservative-write).
 
-### Related reads and endpoint preference
+### Skip providers your application considers unsuitable
 
-For related operations, an application may prefer a provider that completed an earlier request:
+If your application already knows that a provider should not be used, for example because it is lagging, degraded, disabled, or otherwise unsuitable, you can exclude it with `Eligible`:
+
+```go
+tr, err := failnext.New(failnext.Config{
+	Endpoints: endpoints,
+	Eligible: func(id failnext.EndpointID) bool {
+		return !disabled(id)
+	},
+})
+```
+
+`failnext` does not detect chain lag or stale blockchain state itself. Your application decides which providers are eligible.
+
+For each request, `failnext` checks eligibility once per endpoint and keeps those decisions fixed for the lifetime of that request.
+
+### Prefer a provider for a follow-up request
+
+If one provider handled an earlier request, you can ask `failnext` to try that provider first for a follow-up request:
 
 ```go
 ctx := failnext.WithFailoverAllowed(parent)
 ctx = failnext.WithPreferredEndpoint(ctx, preferred)
 ```
 
-Preference is a **soft ordering hint**. It is not pinning and does not provide a cross-provider consistency guarantee. It does not bypass eligibility, cooldown, permission, replayability, or failover-trigger rules.
+If that provider is eligible, `failnext` tries it first. The order of the remaining providers stays the same.
 
-Applications that depend on provider-local state, pending state, sessions, or read-after-write behavior must handle those semantics explicitly.
+Preference only changes which provider is tried first. It does not pin the request to that provider or guarantee cross-provider consistency.
+
+It does not bypass:
+
+* eligibility;
+* cooldown;
+* permission to fail over;
+* request replayability;
+* failover trigger rules.
+
+If your application depends on provider-local state, pending state, sessions, or read-after-write behavior, it still needs to handle those consistency requirements itself.
 
 See [`examples/goethereum/preferred-endpoint`](examples/goethereum/preferred-endpoint).
 
+### Inspect failed providers
+
+If one or more provider attempts fail and the request ends without an HTTP response to return, `FailoverError` records those failed attempts in order:
+
+```go
+var fe *failnext.FailoverError
+if errors.As(err, &fe) {
+	for _, attempt := range fe.Attempts {
+		log.Printf("endpoint=%s err=%v", attempt.Endpoint, attempt.Err)
+	}
+}
+```
+
+The terminal cause remains available through normal Go error unwrapping.
+
+For more detailed visibility, `Config.OnEvent` can report provider attempts, cooldown skips, replay failures, and the final result.
+
+See [`examples/goethereum/error-inspection`](examples/goethereum/error-inspection).
+
 ## How failover works
 
-A later endpoint is not tried merely because another endpoint exists. Endpoint selection, failover permission, failure classification, and request replayability are separate decisions.
+The sections below define the exact rules behind the common patterns above.
+
+A later provider is not tried just because another provider is available.
+
+Four decisions are separate:
+
+1. which provider should be tried;
+2. whether the request is allowed to fail over;
+3. whether the failure actually triggers failover;
+4. whether the request can be replayed for another attempt.
 
 ### Endpoints and priority
 
-Each endpoint has an application-visible ID and a complete HTTP destination:
+Each provider has an ID and a complete HTTP destination:
 
 ```go
 Endpoints: []failnext.Endpoint{
@@ -165,23 +219,29 @@ Endpoints: []failnext.Endpoint{
 }
 ```
 
-Configured order is the normal priority order.
+Providers are normally tried in the order they are configured.
 
-For each physical attempt, `failnext` uses the complete URL of the selected endpoint. It does not join paths, merge query strings, or perform service discovery.
+For each attempt, `failnext` uses the complete URL of the selected provider.
 
-Endpoint IDs are used by features such as eligibility, preference, events, and attempt errors.
+Configured endpoint URLs are not base URLs. `failnext` does not:
+
+* join paths;
+* merge query strings;
+* perform service discovery.
+
+Endpoint IDs are used by eligibility, preference, events, and attempt errors.
 
 ### Failover triggers
 
-With a live logical request context, a base-transport failure that leaves no usable HTTP response is a failover trigger.
+A transport failure can trigger failover while the request context is still active, as long as there is no usable HTTP response to return.
 
 The built-in HTTP status triggers are:
 
-- `502 Bad Gateway`
-- `503 Service Unavailable`
-- `504 Gateway Timeout`
+* `502 Bad Gateway`;
+* `503 Service Unavailable`;
+* `504 Gateway Timeout`.
 
-Applications may add other status codes:
+Applications may add other HTTP status codes:
 
 ```go
 tr, err := failnext.New(failnext.Config{
@@ -192,15 +252,19 @@ tr, err := failnext.New(failnext.Config{
 })
 ```
 
-A non-trigger HTTP response is terminal from `failnext`'s point of view, even if its body represents an application-level failure.
+Additional status codes extend the built-in set.
 
-For example, HTTP 200 containing a JSON-RPC error object does not trigger failover. `failnext` does not inspect response payloads.
+An HTTP response that does not match a failover trigger is returned without trying another provider, even if the response body contains an RPC or application error.
 
-### Permission to cross endpoints
+For example, an HTTP `200` response containing a JSON-RPC error object does **not** trigger failover.
 
-By default, cross-endpoint continuation is inferred as allowed for `GET` and `HEAD`. Other methods are denied unless the application explicitly allows the logical operation or provides a `PermissionPolicy`.
+`failnext` does not inspect response payloads.
 
-The authority order is:
+### Permission to fail over
+
+A failure can trigger failover, but the request must also be allowed to continue to another provider.
+
+The permission order is:
 
 ```text
 request-scoped allow or deny
@@ -212,54 +276,64 @@ GET / HEAD inference
 deny
 ```
 
-Use request-scoped permission when calling code knows whether an operation may safely cross providers:
+By default:
+
+* `GET` and `HEAD` are allowed to fail over;
+* other HTTP methods are denied unless the application explicitly allows failover or a `PermissionPolicy` allows it.
+
+Use request-scoped permission when your code knows that an operation may safely fail over:
 
 ```go
 ctx := failnext.WithFailoverAllowed(parent)
 ```
 
-An inherited allow can be overridden for a more sensitive operation:
+An inherited allow can be overridden when a specific operation should not fail over:
 
 ```go
 ctx := failnext.WithFailoverDenied(parent)
 ```
 
-Permission is operation metadata. It does not:
+When configured, `PermissionPolicy` receives the `*http.Request`.
 
-- make a request body replayable;
-- make an endpoint eligible;
-- bypass cooldown;
-- change which outcomes trigger failover.
+An explicit request-scoped allow or deny takes precedence over the policy.
 
-When configured, `PermissionPolicy` receives the logical `*http.Request`. An explicit request-scoped allow or deny takes precedence.
+Permission only controls whether `failnext` may continue to another provider. It does not:
+
+* make a request body replayable;
+* make an endpoint eligible;
+* bypass cooldown;
+* change which failures trigger failover.
 
 ### Request bodies and replay
 
-The first admitted endpoint may use the original request body even when that body cannot be replayed.
+The first provider can use the original request body, even if that body cannot be replayed.
 
-A later body-bearing attempt requires a fresh body. `failnext` uses the standard `http.Request.GetBody` mechanism:
+If `failnext` needs to try another provider, a request with a body needs a fresh copy from `http.Request.GetBody`:
 
 ```text
 no body
-    -> another attempt can be constructed
+    -> another provider can be tried
 
 body + working GetBody
-    -> another attempt can be constructed
+    -> another provider can be tried
 
 body + no GetBody
-    -> first attempt is valid
-    -> later body-bearing attempts are unavailable
+    -> first provider can be tried
+    -> another provider cannot be tried
 ```
 
-`failnext` does not buffer arbitrary request bodies to manufacture replayability.
+`failnext` does not buffer request bodies to make them replayable.
 
-Permission and replayability are independent: allowing an operation to cross endpoints does not make its body replayable, and having a replayable body does not make the operation safe to repeat.
+Permission and replayability are separate:
+
+* allowing an operation to fail over does not make its request body replayable;
+* having a replayable body does not make the operation safe to repeat.
 
 ## Endpoint selection
 
 ### Eligibility
 
-Applications may exclude configured endpoints through `Eligible`:
+Applications can exclude configured providers with `Eligible`:
 
 ```go
 tr, err := failnext.New(failnext.Config{
@@ -270,30 +344,40 @@ tr, err := failnext.New(failnext.Config{
 })
 ```
 
-Eligibility is captured for the logical request. The decisions observed by `failnext` remain fixed for that request.
+For each request, `failnext` checks eligibility once per endpoint. Those decisions stay fixed for the lifetime of that request.
 
 ### Preferred endpoint
 
-A request may carry one preferred endpoint:
+A request can specify one preferred endpoint:
 
 ```go
 ctx := failnext.WithPreferredEndpoint(parent, "backup")
 ```
 
-If the endpoint exists and is externally eligible, it is promoted to the front of the request's consideration order. The relative order of the remaining endpoints does not change.
+If the preferred endpoint exists and is eligible, `failnext` tries it first.
 
-Preference does not override eligibility, cooldown, permission, replayability, or failover-trigger rules.
+The remaining providers keep their configured order.
 
-An unknown preferred endpoint produces an error matching `failnext.ErrUnknownEndpoint` before a physical attempt is made.
+Preference does not override:
+
+* eligibility;
+* cooldown;
+* permission to fail over;
+* request replayability;
+* failover trigger rules.
+
+If the preferred endpoint is unknown, `failnext` returns an error matching `failnext.ErrUnknownEndpoint` before any provider is tried.
 
 ### Cooldown
 
-Cooldown passively suppresses endpoints after qualifying failures. It is enabled by default with:
+Cooldown temporarily skips a provider after a configured number of qualifying failures.
 
-- 3 consecutive cooldown failures;
-- a 30-second cooldown duration.
+It is enabled by default with:
 
-It can be configured:
+* 3 consecutive cooldown failures;
+* a 30-second cooldown duration.
+
+Configure it with:
 
 ```go
 Cooldown: failnext.CooldownConfig{
@@ -302,7 +386,7 @@ Cooldown: failnext.CooldownConfig{
 },
 ```
 
-or disabled:
+Or disable it:
 
 ```go
 Cooldown: failnext.CooldownConfig{
@@ -310,19 +394,42 @@ Cooldown: failnext.CooldownConfig{
 },
 ```
 
-Cooldown failures are deliberately narrow: live-context transport failures with no usable response, plus HTTP `502`, `503`, and `504`.
+Not every failure that triggers failover counts toward cooldown.
 
-Other obtained HTTP responses reset the consecutive cooldown failure streak, even when an additional status code is configured as a failover trigger.
+Cooldown failures are:
 
-Eligibility and cooldown are different mechanisms. Eligibility is captured for the logical request; cooldown is checked when an endpoint's turn arrives.
+* transport failures while the request context is still active and no usable HTTP response is available;
+* HTTP `502`;
+* HTTP `503`;
+* HTTP `504`.
 
-Cooldown is not a health checker. There are no active probes, half-open states, background workers, or adaptive retry scheduling.
+Other HTTP responses reset the consecutive cooldown failure streak, even if an additional status code is configured to trigger failover.
+
+For example, if you add `429 Too Many Requests` as a failover trigger, a `429` can cause failover, but it does not count as a cooldown failure.
+
+Eligibility and cooldown are separate:
+
+* eligibility stays fixed for the lifetime of a request;
+* cooldown is checked when a provider is about to be tried.
+
+Cooldown is **not** a health checker.
+
+There are no:
+
+* active probes;
+* half-open states;
+* background workers;
+* adaptive retry scheduling.
 
 ## Results and errors
 
-When failover follows an HTTP trigger response, `failnext` may retain that response while trying a later endpoint.
+### Trigger responses and later failures
 
-If a later endpoint produces another HTTP response, that newer response replaces the earlier retained response. A later transport failure does not erase a real HTTP response that is still available.
+If a provider returns an HTTP response that triggers failover, `failnext` can keep that response while trying another provider.
+
+If another provider later returns an HTTP response, the newer response replaces the earlier one.
+
+If the later provider fails with a transport error, the earlier HTTP response can still be returned.
 
 For example:
 
@@ -333,19 +440,33 @@ backup  -> transport error
 result  -> primary's HTTP 503 response
 ```
 
-If preparing a later body-bearing attempt fails through `GetBody`, that later endpoint is not physically attempted. A previously retained HTTP response can still be returned.
+If `GetBody` fails while preparing a request for another provider, that provider is not tried. A previously retained HTTP response can still be returned.
 
-Logical request cancellation or deadline expiration takes priority over a retained response.
+Request cancellation or deadline expiration takes priority over a retained response.
 
-Responses that remain internal to `failnext` are closed when they are discarded or superseded. Once a response is returned, its body belongs to the caller and should be closed normally.
+Responses that remain internal to `failnext` are closed when they are discarded or replaced.
+
+Once a response is returned, its body belongs to the caller and should be closed normally.
 
 ### Errors
 
-`ErrNoUsableEndpoint` is returned directly when no physical attempt can be admitted, for example when all captured eligibility decisions exclude their endpoints or every candidate is cooling before the first attempt.
+`ErrNoUsableEndpoint` is returned when endpoint selection leaves no usable provider to try.
 
-`ErrUnknownEndpoint` identifies an invalid request-scoped endpoint reference such as an unknown preferred endpoint.
+Examples include:
 
-`FailoverError` is used when one or more physical attempts ended without a usable HTTP response and no HTTP response is available to return. Its `Attempts` slice records those attempts in order, and the terminal cause is available through normal Go error unwrapping.
+* every provider is excluded by eligibility;
+* every provider is cooling before the first attempt.
+
+`ErrUnknownEndpoint` is returned when a request refers to an endpoint ID that does not exist, such as an unknown preferred endpoint.
+
+`FailoverError` is used when:
+
+* one or more provider attempts fail without producing a usable HTTP response; and
+* there is no HTTP response available to return.
+
+Its `Attempts` slice records those failed provider attempts in order.
+
+The terminal cause remains available through normal Go error unwrapping:
 
 ```go
 var fe *failnext.FailoverError
@@ -356,7 +477,7 @@ if errors.As(err, &fe) {
 }
 
 if errors.Is(err, failnext.ErrNoUsableEndpoint) {
-	log.Printf("no endpoint could be attempted")
+	log.Printf("no provider could be tried")
 }
 
 if errors.Is(err, failnext.ErrUnknownEndpoint) {
@@ -364,11 +485,9 @@ if errors.Is(err, failnext.ErrUnknownEndpoint) {
 }
 ```
 
-Logical cancellation and deadline expiration remain normal context errors rather than being wrapped in `FailoverError`.
+Cancellation and deadline expiration remain normal context errors and are not wrapped in `FailoverError`.
 
-See [`examples/goethereum/error-inspection`](examples/goethereum/error-inspection) for a complete example.
-
-## Observability and `http.Client` composition
+## Observability and transport composition
 
 ### Events
 
@@ -389,27 +508,33 @@ OnEvent: func(ctx context.Context, event failnext.Event) {
 
 The event kinds are:
 
-| Event | Meaning |
-| --- | --- |
-| `EventAttempt` | A physical endpoint attempt completed. |
-| `EventCooldownSkip` | An endpoint's turn was reached, but live cooldown suppressed it. |
-| `EventReplayError` | A later attempt could not be constructed because `GetBody` failed. |
-| `EventResult` | The logical `RoundTrip` is about to return its final response or error. |
+| Event               | Meaning                                                       |
+| ------------------- | ------------------------------------------------------------- |
+| `EventAttempt`      | A provider attempt completed.                                 |
+| `EventCooldownSkip` | A provider was skipped because it is currently cooling down.  |
+| `EventReplayError`  | Another provider could not be tried because `GetBody` failed. |
+| `EventResult`       | `RoundTrip` is about to return the final response or error.   |
 
-Events for one logical request are delivered in causal order. Different logical requests may invoke the callback concurrently, so application-owned shared state must be protected.
+Events for one request are delivered in causal order.
 
-The callback should return promptly. `failnext` does not recover panics from `OnEvent`.
+Different requests may invoke the callback concurrently, so shared application state must be protected.
+
+`OnEvent` is synchronous. The callback should return promptly.
+
+`failnext` does not recover panics from `OnEvent`.
 
 ### Base transport
 
-The configured `Base` transport handles every physical attempt. If `Base` is nil, `http.DefaultTransport` is used.
+The configured `Base` transport handles every provider attempt.
 
-`Base` is the composition point for behavior that needs to run separately for each selected destination, such as:
+If `Base` is nil, `http.DefaultTransport` is used.
 
-- endpoint-specific authentication;
-- host- or path-bound signing;
-- tracing;
-- custom networking behavior.
+Use `Base` for behavior that needs to run separately for each provider attempt, such as:
+
+* endpoint-specific authentication;
+* host- or path-bound signing;
+* tracing;
+* custom networking behavior.
 
 ```go
 tr, err := failnext.New(failnext.Config{
@@ -422,15 +547,19 @@ tr, err := failnext.New(failnext.Config{
 
 A constructed `Transport` is intended for concurrent reuse.
 
-Custom base transports and application callbacks must satisfy their own concurrency requirements. `PermissionPolicy`, `Eligible`, and `OnEvent` may run concurrently for different logical requests.
+Custom base transports and application callbacks must satisfy their own concurrency requirements.
+
+`PermissionPolicy`, `Eligible`, and `OnEvent` may run concurrently for different requests.
 
 `Transport.CloseIdleConnections` forwards to the base transport when the base supports that operation, so `http.Client.CloseIdleConnections` composes normally.
 
 ## Destination-sensitive request state
 
-Changing the physical destination can change the meaning of request state prepared for a particular host or URL.
+Changing providers can also change the meaning of request state tied to a specific host or URL.
 
-For `Request.Host`, `failnext` uses these rules:
+### `Request.Host`
+
+`failnext` uses these rules:
 
 ```text
 Host == ""
@@ -445,45 +574,114 @@ Host != original URL.Host
     -> preserved
 ```
 
-The comparison is exact. A distinguishably custom Host is preserved across physical attempts.
+The comparison is exact.
 
-One ambiguity remains: if an application deliberately wants a sticky custom Host whose value is exactly equal to the original `URL.Host`, that value is indistinguishable from ordinary URL-derived Host state and will follow the selected endpoint instead.
+If a custom `Host` differs from the original `URL.Host`, `failnext` preserves it when trying another provider.
 
-If an application requires different Host behavior, `Config.Base` middleware can reapply the intended value for every physical attempt.
+One ambiguity remains. If your application intentionally sets a custom `Host` to exactly the same value as the original `URL.Host`, `failnext` cannot distinguish that custom value from the normal URL-derived host value. In that case, the `Host` follows the selected provider.
 
-Host is only one form of destination-sensitive state. Endpoint-specific credentials, host- or path-bound signatures, provider-specific headers, cookies, session state, and similar metadata may also need application-specific handling.
+If your application needs different `Host` behavior, `Config.Base` middleware can reapply the intended value for each provider attempt.
 
-`failnext` does not automatically regenerate, rewrite, or validate those values when it selects another destination.
+### Other destination-sensitive state
 
-Redirect handling belongs to `http.Client`. A followed redirect starts another logical transport invocation rather than becoming part of `failnext`'s endpoint-attempt sequence.
+`Host` is only one example.
+
+These values may also need application-specific handling:
+
+* credentials;
+* host- or path-bound signatures;
+* provider-specific headers;
+* cookies;
+* session state;
+* other destination-bound metadata.
+
+`failnext` does not automatically regenerate, rewrite, or validate those values when it switches to another provider.
+
+### Redirects
+
+Redirect handling belongs to `http.Client`.
+
+If `http.Client` follows a redirect, the redirected request starts a new `failnext` request. It is not another provider attempt in the current failover sequence.
+
+## Generic `http.Client` usage
+
+go-ethereum is a primary use case, but the transport itself is protocol-neutral.
+
+Use `failnext` with a normal `http.Client`:
+
+```go
+package main
+
+import (
+	"log"
+	"net/http"
+
+	"github.com/yermakovsa/failnext"
+)
+
+func main() {
+	tr, err := failnext.New(failnext.Config{
+		Endpoints: []failnext.Endpoint{
+			{ID: "primary", URL: "https://service-a.example/api"},
+			{ID: "backup", URL: "https://service-b.example/api"},
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	client := &http.Client{Transport: tr}
+
+	req, err := http.NewRequest(
+		http.MethodGet,
+		"https://service-a.example/api",
+		nil,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
+}
+```
+
+`GET` requests are allowed to fail over by default, as long as the other failover conditions are satisfied.
+
+Providers are tried in their configured priority order.
 
 ## Examples
 
 The repository includes go-ethereum examples for the main integration patterns:
 
-- [`examples/goethereum/basic-failover`](examples/goethereum/basic-failover) — use `failnext` through `rpc.WithHTTPClient` and allow a JSON-RPC read to fail over.
-- [`examples/goethereum/conservative-write`](examples/goethereum/conservative-write) — explicitly prevent a write from crossing providers.
-- [`examples/goethereum/error-inspection`](examples/goethereum/error-inspection) — inspect failed physical attempts through `FailoverError`.
-- [`examples/goethereum/preferred-endpoint`](examples/goethereum/preferred-endpoint) — prefer the provider that completed an earlier related read without treating preference as pinning.
+* [`examples/goethereum/basic-failover`](examples/goethereum/basic-failover): use `failnext` through `rpc.WithHTTPClient` and allow a JSON-RPC read to fail over.
+* [`examples/goethereum/conservative-write`](examples/goethereum/conservative-write): keep a write from failing over to another provider.
+* [`examples/goethereum/error-inspection`](examples/goethereum/error-inspection): inspect failed provider attempts with `FailoverError`.
+* [`examples/goethereum/preferred-endpoint`](examples/goethereum/preferred-endpoint): try the provider that handled a previous request first for a follow-up request, without pinning to it.
 
 ## What failnext does not do
 
-`failnext` is a focused HTTP failover transport, not a general resilience or routing framework.
+`failnext` is a focused HTTP failover transport, not a general resilience or RPC routing framework.
 
 It does not provide:
 
-- load balancing or service discovery;
-- active health checks;
-- a general retry, backoff, or `Retry-After` scheduler;
-- application-protocol parsing or JSON-RPC error interpretation;
-- arbitrary request-body buffering to create replayability;
-- a general signing, authentication, or header-rewrite framework;
-- hard provider pinning or cross-provider state consistency;
-- base-URL path/query composition;
-- WebSocket failover;
-- Ethereum transaction, nonce, or pending-state management.
+* load balancing or service discovery;
+* active health checks;
+* automatic blockchain lag or stale-state detection;
+* general-purpose retry, backoff, or `Retry-After` scheduling;
+* application-protocol parsing, including JSON-RPC payload and error interpretation;
+* buffering request bodies to make them replayable;
+* a general signing, authentication, or header-rewrite framework;
+* hard provider pinning;
+* cross-provider state consistency;
+* base-URL path or query composition;
+* WebSocket failover;
+* Ethereum transaction, nonce, or pending-state management.
 
-Applications that depend on provider-local state, sessions, pending state, or read-after-write behavior must design for those semantics explicitly.
+If your application depends on provider-local state, sessions, pending state, or read-after-write behavior, it must handle those requirements itself.
 
 ## License
 
