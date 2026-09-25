@@ -12,8 +12,8 @@ type cooldownTracker struct {
 	duration  time.Duration
 
 	mu        sync.Mutex
-	consec    []int       // consecutive failnext-defined availability failures
-	coolingTo []time.Time // if now is before coolingTo[i], endpoint i is cooling down
+	consec    []int       // consecutive failures that count toward cooldown
+	coolingTo []time.Time // endpoint is cooling while now is before coolingTo[i]
 }
 
 func newCooldownTracker(n int, cooldown effectiveCooldown) *cooldownTracker {
@@ -25,7 +25,6 @@ func newCooldownTracker(n int, cooldown effectiveCooldown) *cooldownTracker {
 		coolingTo: make([]time.Time, n),
 	}
 
-	// If disabled, keep parameters inert.
 	if !ct.enabled {
 		ct.threshold = 0
 		ct.duration = 0
@@ -38,6 +37,7 @@ func (c *cooldownTracker) validIndex(idx int) bool {
 	return idx >= 0 && idx < len(c.coolingTo)
 }
 
+// eligible reports whether cooldown currently allows endpoint idx to be tried.
 func (c *cooldownTracker) eligible(now time.Time, idx int) bool {
 	if c == nil || !c.enabled {
 		return true
@@ -57,7 +57,8 @@ func (c *cooldownTracker) eligible(now time.Time, idx int) bool {
 		return false
 	}
 
-	// Cooldown expiry is observed lazily at admission. A new streak starts fresh.
+	// Clear an expired cooldown when the endpoint is next checked.
+	// A new failure streak starts from zero.
 	c.coolingTo[idx] = time.Time{}
 	c.consec[idx] = 0
 	return true
@@ -74,15 +75,16 @@ func (c *cooldownTracker) recordNonFailure(idx int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// A non-failure response interrupts the failure streak, but an already-active
-	// fixed-duration cooldown remains in force until its admission-time expiry.
+	// A result that does not count as a cooldown failure resets the current
+	// failure streak. It does not end an active cooldown early.
 	c.consec[idx] = 0
 }
 
-// recordFailure records one failnext-defined availability failure. An attempt that
-// was admitted before a concurrent cooldown transition may finish while the
-// endpoint is already cooling; its evidence is recorded without extending the
-// active fixed-duration cooldown.
+// recordFailure records one failure that counts toward cooldown.
+//
+// A concurrent attempt may finish after another request has already put the
+// endpoint into cooldown. That failure is recorded without extending the
+// active cooldown.
 func (c *cooldownTracker) recordFailure(now time.Time, idx int) {
 	if c == nil || !c.enabled {
 		return
@@ -100,7 +102,7 @@ func (c *cooldownTracker) recordFailure(now time.Time, idx int) {
 			return
 		}
 
-		// The previous cooldown has expired. Start new evidence from a fresh streak.
+		// The previous cooldown has expired. Start a new failure streak.
 		c.coolingTo[idx] = time.Time{}
 		c.consec[idx] = 0
 	}
@@ -115,6 +117,8 @@ func (c *cooldownTracker) recordFailure(now time.Time, idx int) {
 	}
 }
 
+// isCooldownFailureStatus reports whether an HTTP status counts toward cooldown.
+// This set is fixed and is separate from additional failover trigger status codes.
 func isCooldownFailureStatus(code int) bool {
 	switch code {
 	case 502, 503, 504:

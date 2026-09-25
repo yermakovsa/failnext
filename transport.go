@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// Transport is an http.RoundTripper that fails over across configured endpoints.
+//
+// A Transport is intended for concurrent reuse.
 type Transport struct {
 	cfg      resolvedConfig
 	cooldown *cooldownTracker
@@ -38,8 +41,8 @@ func (t *Transport) CloseIdleConnections() {
 	}
 }
 
-// httpStatusError is used as a cause when an upstream returns a failover-trigger
-// HTTP status.
+// httpStatusError is used as a cause when an endpoint returns an HTTP status
+// that triggers failover.
 type httpStatusError struct {
 	code     int
 	upstream string
@@ -76,16 +79,18 @@ func closeResponseBody(resp *http.Response) {
 }
 
 func normalizeBaseRoundTrip(resp *http.Response, err error, upstream string) (*http.Response, error) {
-	// Normalize misbehaving base transports:
-	//   - never return (nil, nil)
-	//   - close bodies when err != nil to avoid leaks
+	// Normalize invalid base transport results:
+	//   - never propagate (nil, nil)
+	//   - close and discard a response returned together with an error
 	if resp != nil && err != nil {
 		closeResponseBody(resp)
 		resp = nil
 	}
+
 	if resp == nil && err == nil {
 		err = &nilResponseError{upstream: upstream}
 	}
+
 	return resp, err
 }
 
@@ -111,6 +116,7 @@ func (t *Transport) considerationOrder(ctx context.Context) ([]int, error) {
 		if idx != preferredIdx {
 			continue
 		}
+
 		if pos > 0 {
 			copy(order[1:pos+1], order[:pos])
 			order[0] = preferredIdx
@@ -125,6 +131,7 @@ func (t *Transport) nextAdmittedCandidate(ctx context.Context, order []int, star
 	for pos := start; pos < len(order); pos++ {
 		idx := order[pos]
 		now := t.now()
+
 		if t.cooldown == nil || t.cooldown.eligible(now, idx) {
 			return idx, pos + 1, true
 		}
@@ -137,6 +144,7 @@ func (t *Transport) nextAdmittedCandidate(ctx context.Context, order []int, star
 			return 0, pos + 1, false
 		}
 	}
+
 	return 0, len(order), false
 }
 
@@ -161,6 +169,7 @@ func (t *Transport) notifyResult(ctx context.Context, endpoint EndpointID, resp 
 	t.notifyEvent(ctx, event)
 }
 
+// RoundTrip executes req using the configured endpoint failover rules.
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req == nil {
 		return nil, errors.New("failnext: nil request")
@@ -196,6 +205,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	attempts := make([]AttemptError, 0, len(considerationOrder))
 	attemptNo := 0
 	attemptBody := req.Body
+
 	var replayBody io.ReadCloser
 	var ownsReplayBody bool
 	defer func() {
@@ -219,6 +229,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if retainedResp != nil && retainedResp != resp {
 			closeResponseBody(retainedResp)
 		}
+
 		retainedResp = resp
 		retainedEndpoint = endpoint
 	}
@@ -228,6 +239,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if attemptResp == nil {
 			return
 		}
+
 		if attemptResp != retainedResp {
 			closeResponseBody(attemptResp)
 		}
@@ -236,7 +248,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	defer closeAttemptResp()
 
 	// Final response ownership transfers to the caller only after EventResult
-	// returns, so a callback panic remains covered by deferred cleanup.
+	// returns, so deferred cleanup still applies if the callback panics.
 	returnAttemptResponse := func(endpoint EndpointID) (*http.Response, error) {
 		resp := attemptResp
 		t.notifyResult(ctx, endpoint, resp, nil)
@@ -258,9 +270,11 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			closeRetained()
 			return returnError(err)
 		}
+
 		if retainedResp != nil {
 			return returnRetainedResponse()
 		}
+
 		return returnError(&FailoverError{
 			Attempts: attempts,
 			cause:    cause,
@@ -285,8 +299,8 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		endpoint := t.cfg.endpoints[idx]
 		attemptReq := cloneRequestForEndpoint(req, endpoint.url, attemptBody)
 
-		// Base owns the request body once the physical attempt is handed off, so
-		// clear failnext's cleanup responsibility immediately before RoundTrip.
+		// Base owns the request body once the attempt is handed off, so clear
+		// failnext's cleanup responsibility immediately before RoundTrip.
 		if attemptNo == 1 {
 			ownsOriginalBody = false
 		} else {
@@ -301,6 +315,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if resp != nil {
 			status = resp.StatusCode
 		}
+
 		t.notifyEvent(ctx, Event{
 			Kind:       EventAttempt,
 			Endpoint:   endpoint.id,
@@ -309,17 +324,18 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			Err:        attemptErr,
 		})
 
-		// The logical request context is authoritative for cancellation. A base
-		// error shaped like context.Canceled or context.DeadlineExceeded remains an
-		// ordinary transport failure while this context is still live.
+		// Request context cancellation takes precedence. An error matching
+		// context.Canceled or context.DeadlineExceeded from Base is still treated
+		// as a transport failure while the request context itself remains active.
 		if err := ctx.Err(); err != nil {
 			closeAttemptResp()
 			closeRetained()
 			return returnError(err)
 		}
 
-		// Cooldown evidence is classified from the physical outcome before any
-		// continuation gate is considered. Trigger configuration does not affect it.
+		// Record cooldown state from the attempt result before deciding whether to
+		// fail over. Additional failover trigger statuses do not count as cooldown
+		// failures.
 		if t.cooldown != nil {
 			if attemptErr != nil || isCooldownFailureStatus(status) {
 				t.cooldown.recordFailure(t.now(), idx)
@@ -335,14 +351,15 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			})
 		}
 
-		// A non-trigger HTTP response is immediately caller-visible. Any older
-		// retained fallback response is superseded and no longer owned by failnext.
+		// A non-trigger response is final. Discard any previously retained
+		// failover-trigger response before returning it.
 		if attemptErr == nil && !t.cfg.isTriggerStatus(status) {
 			if err := ctx.Err(); err != nil {
 				closeAttemptResp()
 				closeRetained()
 				return returnError(err)
 			}
+
 			if retainedResp != nil {
 				if retainedResp == attemptResp {
 					retainedResp = nil
@@ -351,11 +368,12 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 					closeRetained()
 				}
 			}
+
 			return returnAttemptResponse(endpoint.id)
 		}
 
-		// A failover-trigger HTTP response remains a valid fallback while later
-		// candidates are considered. A newer response supersedes any older one.
+		// Keep a failover-trigger response as a fallback while trying another
+		// endpoint. A newer response replaces the previous fallback.
 		if resp != nil {
 			retainResponse(endpoint.id, resp)
 			attemptResp = nil
@@ -435,11 +453,12 @@ func replayBodyForNextAttempt(req *http.Request) (body io.ReadCloser, replayable
 		}
 		return nil, false, err
 	}
+
 	return body, true, nil
 }
 
-// cloneRequestForEndpoint clones orig and targets the provided endpoint URL.
-// endpoint must be a full target URL; there is no path joining.
+// cloneRequestForEndpoint clones orig and replaces its destination with endpoint.
+// endpoint is a complete target URL; no path or query joining is performed.
 func cloneRequestForEndpoint(orig *http.Request, endpoint *url.URL, body io.ReadCloser) *http.Request {
 	hostFollowsURL := orig.Host != "" && orig.URL != nil && orig.Host == orig.URL.Host
 	r := orig.Clone(orig.Context())
