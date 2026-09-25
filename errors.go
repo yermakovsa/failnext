@@ -6,24 +6,28 @@ import (
 )
 
 var (
-	// ErrNoUsableEndpoint indicates that no physical endpoint could be admitted
-	// for the logical request.
+	// ErrNoUsableEndpoint indicates that endpoint selection left no usable endpoint to try.
 	ErrNoUsableEndpoint = errors.New("failnext: no usable endpoint")
 
-	// ErrUnknownEndpoint indicates that a request-scoped endpoint reference does
-	// not identify an endpoint configured on the processing Transport.
+	// ErrUnknownEndpoint indicates that a request refers to an endpoint ID that
+	// is not configured on the Transport.
 	ErrUnknownEndpoint = errors.New("failnext: unknown endpoint")
 )
 
-// AttemptError records one physical attempt that failed to obtain an HTTP response.
+// AttemptError records an endpoint attempt that failed without producing a
+// usable HTTP response.
 type AttemptError struct {
+	// Endpoint identifies the endpoint that was tried.
 	Endpoint EndpointID
-	Err      error
+
+	// Err is the error associated with the attempt.
+	Err error
 }
 
-// FailoverError reports a logical request that has no HTTP response available
-// after one or more physical no-response attempts.
+// FailoverError reports that one or more endpoint attempts failed without
+// producing a usable HTTP response and no HTTP response is available to return.
 type FailoverError struct {
+	// Attempts contains the failed endpoint attempts in order.
 	Attempts []AttemptError
 
 	cause error
@@ -34,9 +38,16 @@ func (e *FailoverError) Error() string {
 		return "failnext: failover failed without HTTP response"
 	}
 	if e.cause == nil {
-		return fmt.Sprintf("failnext: failover failed without HTTP response (attempts=%d)", len(e.Attempts))
+		return fmt.Sprintf(
+			"failnext: failover failed without HTTP response (attempts=%d)",
+			len(e.Attempts),
+		)
 	}
-	return fmt.Sprintf("failnext: failover failed without HTTP response (attempts=%d): %v", len(e.Attempts), e.cause)
+	return fmt.Sprintf(
+		"failnext: failover failed without HTTP response (attempts=%d): %v",
+		len(e.Attempts),
+		e.cause,
+	)
 }
 
 // Unwrap returns the terminal cause.

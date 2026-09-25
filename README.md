@@ -134,22 +134,24 @@ A replayable HTTP request is not necessarily an operation that should be sent to
 
 See [`examples/goethereum/conservative-write`](examples/goethereum/conservative-write).
 
-### Skip providers your application considers unsuitable
+### Skip providers your application marks as unsuitable
 
-If your application already knows that a provider should not be used, for example because it is lagging, degraded, disabled, or otherwise unsuitable, you can exclude it with `Eligible`:
+If your application knows a provider should not be used, for example because it is lagging, degraded, or disabled, exclude it with `Eligible`:
 
 ```go
 tr, err := failnext.New(failnext.Config{
 	Endpoints: endpoints,
 	Eligible: func(id failnext.EndpointID) bool {
-		return !disabled(id)
+		return eligible(id)
 	},
 })
 ```
 
-`failnext` does not detect chain lag or stale blockchain state itself. Your application decides which providers are eligible.
+`failnext` does not detect provider health, chain lag, or stale blockchain state. Your application owns that decision.
 
-For each request, `failnext` checks eligibility once per endpoint and keeps those decisions fixed for the lifetime of that request.
+For each request, `failnext` checks eligibility once per endpoint and keeps those decisions fixed for that request.
+
+See [`examples/goethereum/skip-ineligible`](examples/goethereum/skip-ineligible).
 
 ### Prefer a provider for a follow-up request
 
@@ -661,6 +663,7 @@ The repository includes go-ethereum examples for the main integration patterns:
 * [`examples/goethereum/conservative-write`](examples/goethereum/conservative-write): keep a write from failing over to another provider.
 * [`examples/goethereum/error-inspection`](examples/goethereum/error-inspection): inspect failed provider attempts with `FailoverError`.
 * [`examples/goethereum/preferred-endpoint`](examples/goethereum/preferred-endpoint): try the provider that handled a previous request first for a follow-up request, without pinning to it.
+* [`examples/goethereum/skip-ineligible`](examples/goethereum/skip-ineligible): skip providers the application marks as unsuitable.
 
 ## What failnext does not do
 

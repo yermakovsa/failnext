@@ -5,31 +5,30 @@ import (
 	"net/http"
 )
 
-// Permission describes whether one logical request may continue to another
-// configured endpoint.
+// Permission describes whether a request may fail over to another endpoint.
 type Permission uint8
 
 const (
-	// PermissionDefer delegates the decision to lower-authority inference.
+	// PermissionDefer falls back to the built-in HTTP method rules.
 	PermissionDefer Permission = iota
-	// PermissionAllow permits cross-endpoint continuation.
+
+	// PermissionAllow allows the request to fail over.
 	PermissionAllow
-	// PermissionDeny prevents cross-endpoint continuation.
+
+	// PermissionDeny prevents the request from failing over.
 	PermissionDeny
 )
 
 type failoverPermissionKey struct{}
 
-// WithFailoverAllowed marks the logical operation carried by ctx as permitted
-// to continue across configured endpoints. A later failnext permission value on a
-// derived context overrides this value.
+// WithFailoverAllowed returns a context that explicitly permits failover to another endpoint.
+// Other failover conditions still apply.
 func WithFailoverAllowed(ctx context.Context) context.Context {
 	return context.WithValue(ctx, failoverPermissionKey{}, PermissionAllow)
 }
 
-// WithFailoverDenied marks the logical operation carried by ctx as not permitted
-// to continue across configured endpoints. A later failnext permission value on a
-// derived context overrides this value.
+// WithFailoverDenied returns a context that explicitly prevents the request from
+// failing over. A later failnext permission on a derived context takes precedence.
 func WithFailoverDenied(ctx context.Context) context.Context {
 	return context.WithValue(ctx, failoverPermissionKey{}, PermissionDeny)
 }
@@ -46,7 +45,7 @@ func resolvePermission(req *http.Request, policy func(*http.Request) Permission)
 		case PermissionDeny:
 			return PermissionDeny
 		case PermissionDefer:
-			// Fall through to generic HTTP-method inference.
+			// Fall through to HTTP method inference.
 		default:
 			return PermissionDeny
 		}
