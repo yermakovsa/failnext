@@ -1,5 +1,7 @@
 # failnext
 
+[![CI](https://github.com/yermakovsa/failnext/actions/workflows/ci.yml/badge.svg)](https://github.com/yermakovsa/failnext/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/yermakovsa/failnext.svg)](https://pkg.go.dev/github.com/yermakovsa/failnext) [![Release](https://img.shields.io/github/v/release/yermakovsa/failnext)](https://github.com/yermakovsa/failnext/releases)
+
 **fail → next**
 
 Client-side failover for Go applications with a small, fixed set of HTTP or RPC providers.
