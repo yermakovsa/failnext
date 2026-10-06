@@ -8,6 +8,7 @@ Client-side failover for Go applications with a small, fixed set of HTTP or RPC 
 
 * **Primary RPC unavailable?** Try the next provider.
 * **One RPC is lagging or degraded?** Skip any provider your application decides not to use.
+* **HTTP 200 with a JSON-RPC error?** Try the request again without that provider.
 * **Want reads to fail over, but not writes?** Keep writes from failing over to another provider.
 * **Reading after a write?** Try the provider that handled the write first.
 * **Everything failed?** See which providers were tried and what went wrong.
@@ -69,7 +70,7 @@ go get github.com/yermakovsa/failnext
 
 The module requires Go 1.24.
 
-> `failnext` was previously named `rcpx`.
+> The project started as `rcpx` in February 2026 and was later renamed to `failnext` as part of a larger redesign.
 
 ## When failnext fits
 
@@ -80,6 +81,7 @@ The module requires Go 1.24.
 * you want failover to happen inside your Go application;
 * your application decides which operations may safely fail over;
 * your application may need to skip providers it considers unavailable, lagging, or degraded;
+* you may need to retry a request without a provider that returned a JSON-RPC error;
 * some follow-up requests should try a previously used provider first.
 
 `failnext` plugs directly into `http.Client`, including go-ethereum over HTTP JSON-RPC.
@@ -136,9 +138,9 @@ A replayable HTTP request is not necessarily an operation that should be sent to
 
 See [`examples/goethereum/conservative-write`](examples/goethereum/conservative-write).
 
-### Skip providers your application marks as unsuitable
+### Skip providers your application knows are unavailable or degraded
 
-If your application knows a provider should not be used, for example because it is lagging, degraded, or disabled, exclude it with `Eligible`:
+If your application knows a provider is unavailable, degraded, lagging, or disabled, use `Eligible` to skip it:
 
 ```go
 tr, err := failnext.New(failnext.Config{
@@ -155,6 +157,21 @@ For each request, `failnext` checks eligibility once per endpoint and keeps thos
 
 See [`examples/goethereum/skip-ineligible`](examples/goethereum/skip-ineligible).
 
+### Try the request again without a provider that returned a JSON-RPC error
+
+An HTTP `200` response can still contain a JSON-RPC error. `failnext` returns that response normally; it does not inspect the JSON-RPC payload or decide whether to try another provider.
+
+If your application decides to try again, exclude the provider that returned the JSON-RPC error from the next request:
+
+```go
+retryCtx := failnext.WithExcludedEndpoints(ctx, rejectedEndpoint)
+result, err := call(retryCtx)
+```
+
+Exclusion affects endpoint selection for that request only. It does not change failover permission, request replayability, cooldown, or failover trigger rules.
+
+See [`examples/goethereum/exclude-endpoint`](examples/goethereum/exclude-endpoint).
+
 ### Prefer a provider for a follow-up request
 
 If one provider handled an earlier request, you can ask `failnext` to try that provider first for a follow-up request:
@@ -164,13 +181,14 @@ ctx := failnext.WithFailoverAllowed(parent)
 ctx = failnext.WithPreferredEndpoint(ctx, preferred)
 ```
 
-If that provider is eligible, `failnext` tries it first. The order of the remaining providers stays the same.
+If that provider is eligible and not excluded, `failnext` tries it first. The order of the remaining providers stays the same.
 
 Preference only changes which provider is tried first. It does not pin the request to that provider or guarantee cross-provider consistency.
 
 It does not bypass:
 
 * eligibility;
+* request-scoped exclusion;
 * cooldown;
 * permission to fail over;
 * request replayability;
@@ -233,7 +251,7 @@ Configured endpoint URLs are not base URLs. `failnext` does not:
 * merge query strings;
 * perform service discovery.
 
-Endpoint IDs are used by eligibility, preference, events, and attempt errors.
+Endpoint IDs are used by eligibility, request-scoped exclusion, preference, events, and attempt errors.
 
 ### Failover triggers
 
@@ -337,7 +355,7 @@ Permission and replayability are separate:
 
 ### Eligibility
 
-Applications can exclude configured providers with `Eligible`:
+Applications can mark configured providers as ineligible with `Eligible`:
 
 ```go
 tr, err := failnext.New(failnext.Config{
@@ -350,6 +368,26 @@ tr, err := failnext.New(failnext.Config{
 
 For each request, `failnext` checks eligibility once per endpoint. Those decisions stay fixed for the lifetime of that request.
 
+### Exclude endpoints from a request
+
+Use `WithExcludedEndpoints` to exclude configured endpoints from a request:
+
+```go
+ctx := failnext.WithExcludedEndpoints(parent, "provider-a")
+```
+
+Excluded endpoints are not considered for that request. Repeated calls add to the existing exclusions:
+
+```go
+ctx = failnext.WithExcludedEndpoints(ctx, "provider-a")
+ctx = failnext.WithExcludedEndpoints(ctx, "provider-b")
+// provider-a and provider-b are both excluded
+```
+
+Exclusion affects endpoint selection only for requests made with that context. It does not change failover permission, request replayability, cooldown, or failover trigger rules. Preference does not override exclusion.
+
+If an excluded endpoint ID is unknown, `failnext` returns an error matching `failnext.ErrUnknownEndpoint` before trying any provider.
+
 ### Preferred endpoint
 
 A request can specify one preferred endpoint:
@@ -358,13 +396,14 @@ A request can specify one preferred endpoint:
 ctx := failnext.WithPreferredEndpoint(parent, "backup")
 ```
 
-If the preferred endpoint exists and is eligible, `failnext` tries it first.
+If the preferred endpoint exists, is eligible, and is not excluded, `failnext` tries it first.
 
 The remaining providers keep their configured order.
 
 Preference does not override:
 
 * eligibility;
+* request-scoped exclusion;
 * cooldown;
 * permission to fail over;
 * request replayability;
@@ -458,10 +497,11 @@ Once a response is returned, its body belongs to the caller and should be closed
 
 Examples include:
 
-* every provider is excluded by eligibility;
+* every provider is excluded by request-scoped exclusion;
+* every provider is ineligible;
 * every provider is cooling before the first attempt.
 
-`ErrUnknownEndpoint` is returned when a request refers to an endpoint ID that does not exist, such as an unknown preferred endpoint.
+`ErrUnknownEndpoint` is returned when a request refers to an endpoint ID that does not exist, such as an unknown preferred or excluded endpoint.
 
 `FailoverError` is used when:
 
@@ -664,6 +704,7 @@ The repository includes go-ethereum examples for the main integration patterns:
 * [`examples/goethereum/basic-failover`](examples/goethereum/basic-failover): use `failnext` through `rpc.WithHTTPClient` and allow a JSON-RPC read to fail over.
 * [`examples/goethereum/conservative-write`](examples/goethereum/conservative-write): keep a write from failing over to another provider.
 * [`examples/goethereum/error-inspection`](examples/goethereum/error-inspection): inspect failed provider attempts with `FailoverError`.
+* [`examples/goethereum/exclude-endpoint`](examples/goethereum/exclude-endpoint): try the request again without a provider that returned a JSON-RPC error.
 * [`examples/goethereum/preferred-endpoint`](examples/goethereum/preferred-endpoint): try the provider that handled a previous request first for a follow-up request, without pinning to it.
 * [`examples/goethereum/skip-ineligible`](examples/goethereum/skip-ineligible): skip providers the application marks as unsuitable.
 
