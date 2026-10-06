@@ -2,6 +2,7 @@ package failnext_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -167,6 +168,107 @@ func ExampleConfig_eligibility() {
 	fmt.Println(string(body))
 	// Output:
 	// served by backup
+}
+
+func ExampleWithExcludedEndpoints() {
+	type resultRecorderKey struct{}
+	type resultRecorder struct {
+		endpoint failnext.EndpointID
+	}
+	type rpcError struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	type rpcResponse struct {
+		Result string    `json:"result"`
+		Error  *rpcError `json:"error"`
+	}
+
+	tr, err := failnext.New(failnext.Config{
+		Endpoints: []failnext.Endpoint{
+			{ID: "primary", URL: "https://primary.example/rpc"},
+			{ID: "backup", URL: "https://backup.example/rpc"},
+		},
+		Base: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			var body string
+			switch req.URL.Host {
+			case "primary.example":
+				body = `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"historical state unavailable"}}`
+			case "backup.example":
+				body = `{"jsonrpc":"2.0","id":1,"result":"0x2a"}`
+			default:
+				return nil, fmt.Errorf("unexpected destination %s", req.URL)
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+		OnEvent: func(ctx context.Context, event failnext.Event) {
+			if event.Kind != failnext.EventResult || event.Endpoint == "" {
+				return
+			}
+
+			if recorder, ok := ctx.Value(resultRecorderKey{}).(*resultRecorder); ok {
+				recorder.endpoint = event.Endpoint
+			}
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	client := &http.Client{Transport: tr}
+
+	call := func(ctx context.Context) (rpcResponse, failnext.EndpointID) {
+		recorder := &resultRecorder{}
+		ctx = context.WithValue(ctx, resultRecorderKey{}, recorder)
+
+		req, err := http.NewRequestWithContext(
+			ctx,
+			http.MethodPost,
+			"https://primary.example/rpc",
+			strings.NewReader(
+				`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":[]}`,
+			),
+		)
+		if err != nil {
+			panic(err)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+
+		var result rpcResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			panic(err)
+		}
+
+		return result, recorder.endpoint
+	}
+
+	ctx := failnext.WithFailoverAllowed(context.Background())
+
+	result, endpoint := call(ctx)
+	fmt.Printf("first: endpoint=%s error=%s\n", endpoint, result.Error.Message)
+
+	// failnext returned the HTTP 200 response normally. The application
+	// decides this RPC error is worth retrying on another provider.
+	if result.Error != nil && result.Error.Code == -32000 {
+		ctx = failnext.WithExcludedEndpoints(ctx, endpoint)
+
+		result, endpoint = call(ctx)
+		fmt.Printf("retry: endpoint=%s result=%s\n", endpoint, result.Result)
+	}
+
+	// Output:
+	// first: endpoint=primary error=historical state unavailable
+	// retry: endpoint=backup result=0x2a
 }
 
 func ExampleWithPreferredEndpoint() {

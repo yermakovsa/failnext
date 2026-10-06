@@ -2,7 +2,8 @@
 // with a small, ordered set of fixed endpoints.
 //
 // A Transport normally tries configured endpoints in priority order. Applications can
-// exclude endpoints with Eligible or prefer one endpoint for a request.
+// filter endpoints with Eligible, exclude endpoints for a request with
+// WithExcludedEndpoints, or prefer one endpoint with WithPreferredEndpoint.
 // Cooldown can temporarily skip endpoints after qualifying failures.
 //
 // Permission to fail over is separate from endpoint selection. Applications can
@@ -11,7 +12,9 @@
 // not buffer request bodies to make them replayable.
 //
 // failnext operates at the HTTP transport layer. It does not inspect protocol
-// payloads or provide load balancing, active health checks, general-purpose
+// payloads or interpret application-level results or errors. Applications own
+// those decisions and may make a new request with different endpoint selection.
+// failnext does not provide load balancing, active health checks, general-purpose
 // retry scheduling, or general-purpose rewriting of destination-specific request state.
 //
 // Use a Transport as http.Client.Transport. Base handles each provider attempt.

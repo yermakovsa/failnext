@@ -95,8 +95,18 @@ func normalizeBaseRoundTrip(resp *http.Response, err error, upstream string) (*h
 }
 
 func (t *Transport) considerationOrder(ctx context.Context) ([]int, error) {
+	excluded := excludedEndpoints(ctx)
+	for id := range excluded {
+		if _, ok := t.cfg.endpointIndex[id]; !ok {
+			return nil, fmt.Errorf("%w %q", ErrUnknownEndpoint, id)
+		}
+	}
+
 	order := make([]int, 0, len(t.cfg.endpoints))
 	for i, endpoint := range t.cfg.endpoints {
+		if _, ok := excluded[endpoint.id]; ok {
+			continue
+		}
 		if t.cfg.eligible == nil || t.cfg.eligible(endpoint.id) {
 			order = append(order, i)
 		}
