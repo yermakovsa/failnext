@@ -198,6 +198,26 @@ If your application depends on provider-local state, pending state, sessions, or
 
 See [`examples/goethereum/preferred-endpoint`](examples/goethereum/preferred-endpoint).
 
+### Allow POST failover by default
+
+If every `POST` request sent through this transport is safe to fail over, configure `PermissionPolicy` once instead of calling `WithFailoverAllowed` for each request:
+
+```go
+tr, err := failnext.New(failnext.Config{
+	Endpoints: endpoints,
+	PermissionPolicy: func(req *http.Request) failnext.Permission {
+		if req.Method == http.MethodPost {
+			return failnext.PermissionAllow
+		}
+		return failnext.PermissionDefer
+	},
+})
+```
+
+`POST` is not inherently safe to fail over. Use this policy only when your application knows that every `POST` request sent through this transport is safe to repeat.
+
+A request-scoped allow or deny takes precedence over `PermissionPolicy`, so callers can override this default for a specific request.
+
 ### Inspect failed providers
 
 If one or more provider attempts fail and the request ends without an HTTP response to return, `FailoverError` records those failed attempts in order:
@@ -315,7 +335,7 @@ An inherited allow can be overridden when a specific operation should not fail o
 ctx := failnext.WithFailoverDenied(parent)
 ```
 
-When configured, `PermissionPolicy` receives the `*http.Request`.
+Use `PermissionPolicy` when failover permission follows a rule that can be applied to every request. The policy receives the `*http.Request`, so it can decide based on request properties such as the HTTP method.
 
 An explicit request-scoped allow or deny takes precedence over the policy.
 
