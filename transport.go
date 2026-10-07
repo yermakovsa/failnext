@@ -317,7 +317,9 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			ownsReplayBody = false
 		}
 
+		started := t.now()
 		resp, attemptErr := t.cfg.base.RoundTrip(attemptReq)
+		duration := t.now().Sub(started)
 		resp, attemptErr = normalizeBaseRoundTrip(resp, attemptErr, endpoint.raw)
 		attemptResp = resp
 
@@ -331,6 +333,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			Endpoint:   endpoint.id,
 			Attempt:    attemptNo,
 			StatusCode: status,
+			Duration:   duration,
 			Err:        attemptErr,
 		})
 

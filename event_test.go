@@ -48,6 +48,153 @@ func TestEvents_FirstAttemptHTTPSuccess(t *testing.T) {
 	})
 }
 
+func TestEvents_AttemptDuration_HTTPResponse(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	started := time.Unix(2000, 0)
+	wantDuration := 275 * time.Millisecond
+	baseReturned := false
+
+	var events []Event
+	rt := mustNewTransport(t, Config{
+		Endpoints: testEndpoints(u1),
+		Base: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			baseReturned = true
+			return httpResp(http.StatusOK, "ok"), nil
+		}),
+		OnEvent: func(_ context.Context, event Event) {
+			events = append(events, event)
+		},
+	})
+	rt.now = func() time.Time {
+		if baseReturned {
+			return started.Add(wantDuration)
+		}
+		return started
+	}
+
+	resp := mustRoundTrip(t, rt, newTestGETRequest(t, u1))
+	assertStatus(t, resp, http.StatusOK)
+
+	if len(events) != 2 {
+		t.Fatalf("unexpected event count: got=%d events=%#v", len(events), events)
+	}
+	assertEvent(t, events[0], Event{
+		Kind:       EventAttempt,
+		Endpoint:   "endpoint-1",
+		Attempt:    1,
+		StatusCode: http.StatusOK,
+		Duration:   wantDuration,
+	})
+	assertEvent(t, events[1], Event{
+		Kind:       EventResult,
+		Endpoint:   "endpoint-1",
+		StatusCode: http.StatusOK,
+	})
+}
+
+func TestEvents_AttemptDuration_TransportError(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	transportErr := errors.New("dial failed")
+	started := time.Unix(2100, 0)
+	wantDuration := 425 * time.Millisecond
+	baseReturned := false
+
+	var events []Event
+	rt := mustNewTransport(t, Config{
+		Endpoints: testEndpoints(u1),
+		Base: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			baseReturned = true
+			return nil, transportErr
+		}),
+		OnEvent: func(_ context.Context, event Event) {
+			events = append(events, event)
+		},
+	})
+	rt.now = func() time.Time {
+		if baseReturned {
+			return started.Add(wantDuration)
+		}
+		return started
+	}
+
+	resp, err := rt.RoundTrip(newTestGETRequest(t, u1))
+	if resp != nil {
+		t.Fatalf("expected nil response, got %#v", resp)
+	}
+	mustAsFailoverError(t, err)
+
+	if len(events) != 2 {
+		t.Fatalf("unexpected event count: got=%d events=%#v", len(events), events)
+	}
+	assertEvent(t, events[0], Event{
+		Kind:     EventAttempt,
+		Endpoint: "endpoint-1",
+		Attempt:  1,
+		Duration: wantDuration,
+		Err:      transportErr,
+	})
+	assertEvent(t, events[1], Event{
+		Kind: EventResult,
+		Err:  err,
+	})
+}
+
+func TestEvents_AttemptDuration_LogicalCancellation(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	started := time.Unix(2200, 0)
+	wantDuration := 650 * time.Millisecond
+	baseReturned := false
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	var events []Event
+	rt := mustNewTransport(t, Config{
+		Endpoints: testEndpoints(u1),
+		Base: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			cancel()
+			baseReturned = true
+			return nil, io.EOF
+		}),
+		OnEvent: func(_ context.Context, event Event) {
+			events = append(events, event)
+		},
+	})
+	rt.now = func() time.Time {
+		if baseReturned {
+			return started.Add(wantDuration)
+		}
+		return started
+	}
+
+	req := newTestGETRequest(t, u1).WithContext(ctx)
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		t.Fatalf("expected nil response, got %#v", resp)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	if len(events) != 2 {
+		t.Fatalf("unexpected event count: got=%d events=%#v", len(events), events)
+	}
+	assertEvent(t, events[0], Event{
+		Kind:     EventAttempt,
+		Endpoint: "endpoint-1",
+		Attempt:  1,
+		Duration: wantDuration,
+		Err:      io.EOF,
+	})
+	assertEvent(t, events[1], Event{
+		Kind: EventResult,
+		Err:  context.Canceled,
+	})
+	if events[1].Err != err {
+		t.Fatalf("expected EventResult.Err to be returned error: event=%v returned=%v", events[1].Err, err)
+	}
+}
+
 func TestEvents_TransportFailureThenSuccess(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 	u2 := "https://u2.test/rpc"
@@ -704,6 +851,9 @@ func assertEvent(t *testing.T, got, want Event) {
 	}
 	if got.StatusCode != want.StatusCode {
 		t.Fatalf("event status: got=%d want=%d event=%#v", got.StatusCode, want.StatusCode, got)
+	}
+	if got.Duration != want.Duration {
+		t.Fatalf("event duration: got=%s want=%s event=%#v", got.Duration, want.Duration, got)
 	}
 	if want.Err == nil {
 		if got.Err != nil {

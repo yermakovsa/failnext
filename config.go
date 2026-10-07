@@ -55,6 +55,11 @@ type Event struct {
 	// StatusCode is the HTTP response status code when applicable.
 	StatusCode int
 
+	// Duration is the elapsed time spent on this endpoint attempt. It does not
+	// include response-body reads after the underlying HTTP transport returns.
+	// It is zero for events other than EventAttempt.
+	Duration time.Duration
+
 	// Err is the error associated with the event, if any.
 	Err error
 }
