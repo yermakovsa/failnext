@@ -560,11 +560,12 @@ Cancellation and deadline expiration remain normal context errors and are not wr
 ```go
 OnEvent: func(ctx context.Context, event failnext.Event) {
 	log.Printf(
-		"kind=%d endpoint=%s attempt=%d status=%d err=%v",
+		"kind=%d endpoint=%s attempt=%d status=%d duration=%s err=%v",
 		event.Kind,
 		event.Endpoint,
 		event.Attempt,
 		event.StatusCode,
+		event.Duration,
 		event.Err,
 	)
 },
@@ -578,6 +579,12 @@ The event kinds are:
 | `EventCooldownSkip` | A provider was skipped because it is currently cooling down.  |
 | `EventReplayError`  | Another provider could not be tried because `GetBody` failed. |
 | `EventResult`       | `RoundTrip` is about to return the final response or error.   |
+
+`Event.Duration` is meaningful only for `EventAttempt`. It reports how long the endpoint attempt took, from when `failnext` hands the request to the underlying HTTP transport until that transport returns a response or error.
+
+It does not include `failnext` processing before or after the attempt, or time spent reading the response body later.
+
+For other event kinds, `Duration` is zero.
 
 Events for one request are delivered in causal order.
 
