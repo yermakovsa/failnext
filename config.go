@@ -89,8 +89,8 @@ type Config struct {
 	// Eligible reports whether an endpoint may be used for a request. If nil,
 	// all configured endpoints are eligible.
 	//
-	// It is called once per endpoint per request, and each result stays fixed
-	// for the lifetime of that request.
+	// It is called at most once per endpoint per request; excluded endpoints
+	// are not checked. Each result stays fixed for the lifetime of that request.
 	//
 	// Eligible may be called concurrently for different requests and should
 	// return promptly.

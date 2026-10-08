@@ -1,5 +1,6 @@
-// Package failnext provides an HTTP failover RoundTripper for applications
-// with a small, ordered set of fixed endpoints.
+// Package failnext provides client-side HTTP failover for Go applications
+// through the http.RoundTripper interface. It is designed for a small,
+// ordered set of fixed HTTP endpoints, such as JSON-RPC providers.
 //
 // A Transport normally tries configured endpoints in priority order. Applications can
 // filter endpoints with Eligible, exclude endpoints for a request with
@@ -11,13 +12,17 @@
 // another endpoint with a request body requires Request.GetBody; failnext does
 // not buffer request bodies to make them replayable.
 //
-// failnext operates at the HTTP transport layer. It does not inspect protocol
-// payloads or interpret application-level results or errors. Applications own
-// those decisions and may make a new request with different endpoint selection.
-// failnext does not provide load balancing, active health checks, general-purpose
-// retry scheduling, or general-purpose rewriting of destination-specific request state.
+// failnext operates at the HTTP transport layer. It does not inspect JSON-RPC
+// or other protocol payloads, and it does not interpret application-level
+// results or errors. Applications own those decisions and may make a new
+// request with different endpoint selection.
 //
-// Use a Transport as http.Client.Transport. Base handles each provider attempt.
+// failnext provides failover, not load balancing. It does not provide active
+// health checks, general-purpose retry scheduling, or general-purpose rewriting
+// of destination-specific request state.
+//
+// Use a Transport as http.Client.Transport. Config.Base handles each endpoint
+// attempt.
 package failnext
 
 import "time"

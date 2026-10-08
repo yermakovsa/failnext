@@ -4,20 +4,26 @@
 
 **fail → next**
 
-Client-side failover for Go applications with a small, fixed set of HTTP or RPC providers.
+`failnext` is a Go library for client-side failover across a small, fixed set of HTTP or RPC providers.
 
 * **Primary RPC unavailable?** Try the next provider.
 * **One RPC is lagging or degraded?** Skip any provider your application decides not to use.
-* **HTTP 200 with a JSON-RPC error?** Try the request again without that provider.
+* **HTTP 200 with a JSON-RPC error?** Let the app retry without that provider.
 * **Want reads to fail over, but not writes?** Keep writes from failing over to another provider.
 * **Reading after a write?** Try the provider that handled the write first.
 * **Everything failed?** See which providers were tried and what went wrong.
 
-A primary use case is [go-ethereum](https://github.com/ethereum/go-ethereum) over HTTP JSON-RPC, but `failnext` itself is protocol-neutral. It plugs into `http.Client` as an `http.RoundTripper`.
+A primary use case is [go-ethereum](https://github.com/ethereum/go-ethereum) over HTTP JSON-RPC, but `failnext` is protocol-neutral. It integrates with Go's `http.Client` as an `http.RoundTripper`.
 
-`failnext` handles the mechanics of trying providers in order. Your application decides which operations may safely continue to another provider; `failnext` does not parse JSON-RPC or make that decision for you.
+`failnext` handles how requests move between providers, not what those requests mean. It selects configured providers and can fail over on transport errors or selected HTTP status codes.
+
+It does not inspect JSON-RPC response bodies or trigger failover based on JSON-RPC errors. Your application decides which providers are suitable, which operations may safely fail over, and when to retry after an application-level error.
+
+If your application retries after an application-level error, it can use `WithExcludedEndpoints` to skip the provider that returned the error.
 
 `failnext` is failover, not load balancing.
+
+The project started as `rcpx` in February 2026 and was later renamed to `failnext` as part of a larger redesign.
 
 ## Quick start
 
@@ -70,7 +76,7 @@ go get github.com/yermakovsa/failnext
 
 The module requires Go 1.24.
 
-> The project started as `rcpx` in February 2026 and was later renamed to `failnext` as part of a larger redesign.
+`failnext` follows semantic versioning and maintains backward compatibility for its public API across v1 releases.
 
 ## When failnext fits
 
