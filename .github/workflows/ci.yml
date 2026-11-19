@@ -60,7 +60,7 @@ jobs:
         env:
           GOFLAGS: -mod=readonly
         with:
-          version: "2026.2"
+          version: "2026.2.2"
           install-go: false
 
   test-minimum:
