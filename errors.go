@@ -1,6 +1,7 @@
 package failnext
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -12,6 +13,10 @@ var (
 	// ErrUnknownEndpoint indicates that a request refers to an endpoint ID that
 	// is not configured on the Transport.
 	ErrUnknownEndpoint = errors.New("failnext: unknown endpoint")
+
+	// ErrAttemptTimeout identifies expiration of failnext's per-attempt timeout.
+	// It also matches context.DeadlineExceeded through errors.Is.
+	ErrAttemptTimeout = fmt.Errorf("failnext: attempt timed out: %w", context.DeadlineExceeded)
 )
 
 // AttemptError records an endpoint attempt that failed without producing a

@@ -75,6 +75,11 @@ type Config struct {
 	// Base handles each endpoint attempt. If nil, http.DefaultTransport is used.
 	Base http.RoundTripper
 
+	// AttemptTimeout sets a timeout for each Base.RoundTrip call. Zero disables it;
+	// negative values are invalid. On timeout, failnext cancels the attempt context
+	// but waits for Base.RoundTrip to return. Response-body reads are not timed.
+	AttemptTimeout time.Duration
+
 	// PermissionPolicy decides whether a request may fail over when no explicit
 	// request-scoped permission is set.
 	//
@@ -153,6 +158,7 @@ type resolvedConfig struct {
 	endpoints        []resolvedEndpoint
 	endpointIndex    map[EndpointID]int
 	base             http.RoundTripper
+	attemptTimeout   time.Duration
 	permissionPolicy func(*http.Request) Permission
 	eligible         func(EndpointID) bool
 	cooldown         effectiveCooldown
@@ -165,6 +171,9 @@ type resolvedConfig struct {
 func resolveConfig(cfg Config) (resolvedConfig, error) {
 	if len(cfg.Endpoints) == 0 {
 		return resolvedConfig{}, fmt.Errorf("failnext: no endpoints")
+	}
+	if cfg.AttemptTimeout < 0 {
+		return resolvedConfig{}, fmt.Errorf("failnext: invalid AttemptTimeout %s", cfg.AttemptTimeout)
 	}
 
 	endpoints := make([]resolvedEndpoint, 0, len(cfg.Endpoints))
@@ -223,6 +232,7 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 		endpoints:        endpoints,
 		endpointIndex:    endpointIndex,
 		base:             base,
+		attemptTimeout:   cfg.AttemptTimeout,
 		permissionPolicy: cfg.PermissionPolicy,
 		eligible:         cfg.Eligible,
 		cooldown:         cooldown,

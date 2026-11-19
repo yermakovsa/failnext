@@ -377,6 +377,28 @@ Permission and replayability are separate:
 * allowing an operation to fail over does not make its request body replayable;
 * having a replayable body does not make the operation safe to repeat.
 
+### Per-attempt timeouts
+
+By default, `failnext` does not impose a timeout on individual provider attempts. To enable one, set `Config.AttemptTimeout`:
+
+```go
+tr, err := failnext.New(failnext.Config{
+    Endpoints: []failnext.Endpoint{
+        {ID: "primary", URL: "https://provider-a.example/rpc"},
+        {ID: "backup", URL: "https://provider-b.example/rpc"},
+    },
+    AttemptTimeout: 750 * time.Millisecond,
+})
+```
+
+`AttemptTimeout` applies separately to each `Base.RoundTrip` call, not to the entire request. Zero disables it; negative values are invalid. Use the request's context to set an overall deadline.
+
+The timeout covers `Base.RoundTrip`, not later reads from `Response.Body`. If a provider returns headers but stalls while streaming the body, that does not trigger failover.
+
+On timeout, `failnext` cancels the attempt's context and waits for `Base.RoundTrip` to return. If `Base` ignores cancellation, the attempt can take longer than the configured timeout. `AttemptTimeout` does not add a deadline visible through `Context.Deadline()`.
+
+A timed-out attempt counts as a transport failure, but failover still requires permission, another usable endpoint, and a replayable request body where needed. If the logical request's context is canceled or its deadline expires, failover stops.
+
 ## Endpoint selection
 
 ### Eligibility
@@ -467,7 +489,7 @@ Not every failure that triggers failover counts toward cooldown.
 
 Cooldown failures are:
 
-* transport failures while the request context is still active and no usable HTTP response is available;
+* transport failures, including per-attempt timeouts, while the logical request context is still active;
 * HTTP `502`;
 * HTTP `503`;
 * HTTP `504`.
@@ -511,7 +533,7 @@ result  -> primary's HTTP 503 response
 
 If `GetBody` fails while preparing a request for another provider, that provider is not tried. A previously retained HTTP response can still be returned.
 
-Request cancellation or deadline expiration takes priority over a retained response.
+If the request is canceled or its deadline expires, `failnext` discards any retained response. If a later attempt times out, the earlier response can still be returned.
 
 Responses that remain internal to `failnext` are closed when they are discarded or replaced.
 
@@ -555,7 +577,22 @@ if errors.Is(err, failnext.ErrUnknownEndpoint) {
 }
 ```
 
-Cancellation and deadline expiration remain normal context errors and are not wrapped in `FailoverError`.
+If the **logical request** is canceled or its deadline expires, `failnext` returns the context error directly, without `FailoverError`.
+
+A timed-out attempt reports `failnext.ErrAttemptTimeout`, which also matches `context.DeadlineExceeded` through `errors.Is`. It does not cancel the logical request. If the final result is a `FailoverError`, timed-out attempts appear in its `Attempts` slice:
+
+```go
+var fe *failnext.FailoverError
+if errors.As(err, &fe) {
+	for _, attempt := range fe.Attempts {
+		if errors.Is(attempt.Err, failnext.ErrAttemptTimeout) {
+			log.Printf("timed out: %s", attempt.Endpoint)
+		}
+	}
+}
+```
+
+A `context.DeadlineExceeded` error returned by `Base` is not necessarily `failnext.ErrAttemptTimeout`.
 
 ## Observability and transport composition
 
@@ -588,7 +625,7 @@ The event kinds are:
 
 `Event.Duration` is meaningful only for `EventAttempt`. It reports how long the endpoint attempt took, from when `failnext` hands the request to the underlying HTTP transport until that transport returns a response or error.
 
-It does not include `failnext` processing before or after the attempt, or time spent reading the response body later.
+`Duration` excludes `failnext` processing and later response-body reads. If `Base` is slow to return after cancellation, a timed-out attempt's duration may exceed `AttemptTimeout`. For timed-out attempts, `Event.Err` matches `ErrAttemptTimeout` and `Event.StatusCode` is zero.
 
 For other event kinds, `Duration` is zero.
 
