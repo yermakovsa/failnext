@@ -393,6 +393,15 @@ tr, err := failnext.New(failnext.Config{
 
 `AttemptTimeout` applies separately to each `Base.RoundTrip` call, not to the entire request. Zero disables it; negative values are invalid. Use the request's context to set an overall deadline.
 
+Use `WithAttemptTimeout` to override the configured timeout for a request:
+
+```go
+ctx := failnext.WithAttemptTimeout(parent, 200*time.Millisecond)
+req = req.WithContext(ctx)
+```
+
+Without an override, the configured timeout applies. Passing zero explicitly disables it for that request; a negative override causes `RoundTrip` to return an error before attempting an endpoint. A later override on a derived context takes precedence.
+
 The timeout covers `Base.RoundTrip`, not later reads from `Response.Body`. If a provider returns headers but stalls while streaming the body, that does not trigger failover.
 
 On timeout, `failnext` cancels the attempt's context and waits for `Base.RoundTrip` to return. If `Base` ignores cancellation, the attempt can take longer than the configured timeout. `AttemptTimeout` does not add a deadline visible through `Context.Deadline()`.
