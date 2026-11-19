@@ -2,6 +2,7 @@ package failnext
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -348,4 +349,39 @@ func TestNewAdditionalTriggerStatusCodes(t *testing.T) {
 			t.Fatal("expected normalized trigger status 500")
 		}
 	})
+}
+
+func TestNewAttemptTimeout(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		timeout time.Duration
+	}{
+		{name: "zero disables", timeout: 0},
+		{name: "positive accepted", timeout: 750 * time.Millisecond},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tr := mustNewTransport(t, Config{
+				Endpoints:      testEndpoints(endpointURL),
+				AttemptTimeout: tt.timeout,
+			})
+			if got := tr.cfg.attemptTimeout; got != tt.timeout {
+				t.Fatalf("resolved AttemptTimeout = %s, want %s", got, tt.timeout)
+			}
+		})
+	}
+
+	for _, timeout := range []time.Duration{-time.Nanosecond, -time.Second} {
+		t.Run("negative "+timeout.String(), func(t *testing.T) {
+			tr, err := New(Config{
+				Endpoints:      testEndpoints(endpointURL),
+				AttemptTimeout: timeout,
+			})
+			if err == nil || !strings.Contains(err.Error(), "AttemptTimeout") {
+				t.Fatalf("expected invalid AttemptTimeout error, got %v", err)
+			}
+			if tr != nil {
+				t.Fatalf("expected nil transport on invalid config, got %#v", tr)
+			}
+		})
+	}
 }

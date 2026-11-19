@@ -317,9 +317,18 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			ownsReplayBody = false
 		}
 
-		started := t.now()
-		resp, attemptErr := t.cfg.base.RoundTrip(attemptReq)
-		duration := t.now().Sub(started)
+		var resp *http.Response
+		var attemptErr error
+		var duration time.Duration
+		if t.cfg.attemptTimeout > 0 {
+			// Store the response in attemptResp so deferred cleanup covers it.
+			duration, attemptErr = t.roundTripWithAttemptTimeout(attemptReq, &attemptResp)
+			resp = attemptResp
+		} else {
+			started := t.now()
+			resp, attemptErr = t.cfg.base.RoundTrip(attemptReq)
+			duration = t.now().Sub(started)
+		}
 		resp, attemptErr = normalizeBaseRoundTrip(resp, attemptErr, endpoint.raw)
 		attemptResp = resp
 
