@@ -44,7 +44,7 @@ func TestTimedAttempt_TimeoutCancelsOnlyAttempt(t *testing.T) {
 	}))
 
 	var resp *http.Response
-	_, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t).WithContext(parent), &resp)
+	_, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t).WithContext(parent), tr.cfg.attemptTimeout, &resp)
 	if resp != nil || !errors.Is(err, ErrAttemptTimeout) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("timed attempt: resp=%#v err=%v", resp, err)
 	}
@@ -64,7 +64,7 @@ func TestTimedAttempt_CompletionStopsTimeoutAndBodyCloseCancels(t *testing.T) {
 		return newHTTPResp(http.StatusOK, "body is still readable"), nil
 	}))
 	var resp *http.Response
-	if _, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), &resp); err != nil {
+	if _, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), tr.cfg.attemptTimeout, &resp); err != nil {
 		t.Fatal(err)
 	}
 	if resp == nil {
@@ -96,7 +96,7 @@ func TestTimedAttempt_LateBaseResponseIsDiscarded(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Body: lateBody}, nil
 	}))
 	var resp *http.Response
-	_, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), &resp)
+	_, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), tr.cfg.attemptTimeout, &resp)
 	if resp != nil || !errors.Is(err, ErrAttemptTimeout) {
 		t.Fatalf("late response: resp=%#v err=%v", resp, err)
 	}
@@ -129,7 +129,7 @@ func TestTimedAttempt_WaitsForNonCooperativeBaseToReturn(t *testing.T) {
 	req := newTimedTestRequest(t)
 	go func() {
 		var resp *http.Response
-		_, err := tr.roundTripWithAttemptTimeout(req, &resp)
+		_, err := tr.roundTripWithAttemptTimeout(req, tr.cfg.attemptTimeout, &resp)
 		done <- result{resp: resp, err: err}
 	}()
 
@@ -168,7 +168,7 @@ func TestTimedAttempt_NormalBaseErrorCancelsContext(t *testing.T) {
 		return nil, baseErr
 	}))
 	var resp *http.Response
-	_, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), &resp)
+	_, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), tr.cfg.attemptTimeout, &resp)
 	if resp != nil || err != baseErr {
 		t.Fatalf("base error: resp=%#v err=%v", resp, err)
 	}
@@ -186,7 +186,7 @@ func TestTimedAttempt_ResponseWithErrorRemainsOwnedUntilNormalization(t *testing
 		return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: body}, baseErr
 	}))
 	var resp *http.Response
-	_, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), &resp)
+	_, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), tr.cfg.attemptTimeout, &resp)
 	if resp == nil || err != baseErr || attemptCtx.Err() != nil {
 		t.Fatalf("before normalization: resp=%#v err=%v ctxerr=%v", resp, err, attemptCtx.Err())
 	}
@@ -207,7 +207,7 @@ func TestTimedAttempt_BodylessResponseCancelsImmediately(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusNoContent, Body: body}, nil
 		}))
 		var resp *http.Response
-		if _, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), &resp); err != nil {
+		if _, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), tr.cfg.attemptTimeout, &resp); err != nil {
 			t.Fatal(err)
 		}
 		if resp == nil || resp.Body != body || !errors.Is(attemptCtx.Err(), context.Canceled) {
@@ -231,7 +231,7 @@ func TestTimedAttempt_PreservesHTTP101BodyWriter(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: body}, nil
 	}))
 	var resp *http.Response
-	if _, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), &resp); err != nil {
+	if _, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), tr.cfg.attemptTimeout, &resp); err != nil {
 		t.Fatal(err)
 	}
 	writer, ok := resp.Body.(io.Writer)
@@ -267,7 +267,7 @@ func TestTimedAttempt_BasePanicCancelsContext(t *testing.T) {
 			}
 		}()
 		var resp *http.Response
-		_, _ = tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), &resp)
+		_, _ = tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), tr.cfg.attemptTimeout, &resp)
 	}()
 	if attemptCtx == nil || !errors.Is(attemptCtx.Err(), context.Canceled) {
 		t.Fatal("panic left attempt context alive")
@@ -288,7 +288,7 @@ func TestTimedAttempt_PanicBeforeRegistrationCleansResponse(t *testing.T) {
 			}
 		}()
 		// Force registration to panic after the timer was stopped.
-		_, _ = tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), nil)
+		_, _ = tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), tr.cfg.attemptTimeout, nil)
 	}()
 	if !body.Closed() || !errors.Is(attemptCtx.Err(), context.Canceled) {
 		t.Fatal("panic before registration left response or context unowned")
@@ -303,7 +303,7 @@ func TestTimedAttempt_LogicalCancellationIsNotAttemptTimeout(t *testing.T) {
 		return nil, req.Context().Err()
 	}))
 	var resp *http.Response
-	_, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t).WithContext(parent), &resp)
+	_, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t).WithContext(parent), tr.cfg.attemptTimeout, &resp)
 	if resp != nil || !errors.Is(err, context.Canceled) || errors.Is(err, ErrAttemptTimeout) {
 		t.Fatalf("logical cancellation: resp=%#v err=%v", resp, err)
 	}

@@ -202,6 +202,14 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return returnError(err)
 	}
 
+	attemptTimeout := t.cfg.attemptTimeout
+	if override, ok := attemptTimeoutFromContext(ctx); ok {
+		if override < 0 {
+			return returnError(fmt.Errorf("failnext: invalid attempt timeout %s", override))
+		}
+		attemptTimeout = override
+	}
+
 	permission := resolvePermission(req, t.cfg.permissionPolicy)
 
 	considerationOrder, err := t.considerationOrder(ctx)
@@ -320,9 +328,9 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		var resp *http.Response
 		var attemptErr error
 		var duration time.Duration
-		if t.cfg.attemptTimeout > 0 {
+		if attemptTimeout > 0 {
 			// Store the response in attemptResp so deferred cleanup covers it.
-			duration, attemptErr = t.roundTripWithAttemptTimeout(attemptReq, &attemptResp)
+			duration, attemptErr = t.roundTripWithAttemptTimeout(attemptReq, attemptTimeout, &attemptResp)
 			resp = attemptResp
 		} else {
 			started := t.now()

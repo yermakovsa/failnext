@@ -76,8 +76,9 @@ type Config struct {
 	Base http.RoundTripper
 
 	// AttemptTimeout sets a timeout for each Base.RoundTrip call. Zero disables it;
-	// negative values are invalid. On timeout, failnext cancels the attempt context
-	// but waits for Base.RoundTrip to return. Response-body reads are not timed.
+	// negative values are invalid. WithAttemptTimeout can override it per request.
+	// On timeout, failnext cancels the attempt context but waits for Base.RoundTrip
+	// to return. Response-body reads are not timed.
 	AttemptTimeout time.Duration
 
 	// PermissionPolicy decides whether a request may fail over when no explicit

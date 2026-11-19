@@ -817,7 +817,7 @@ func TestTimedAttempt_BodyClosePanicStillCancelsContext(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Body: panicCloseBody{}}, nil
 	}))
 	var resp *http.Response
-	if _, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), &resp); err != nil {
+	if _, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), tr.cfg.attemptTimeout, &resp); err != nil {
 		t.Fatal(err)
 	}
 	func() {
@@ -845,7 +845,7 @@ func TestTimedAttempt_CompletionTimeoutRacePreservesOwnership(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusOK, Body: body}, nil
 		}))
 		var resp *http.Response
-		_, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), &resp)
+		_, err := tr.roundTripWithAttemptTimeout(newTimedTestRequest(t), tr.cfg.attemptTimeout, &resp)
 		if errors.Is(err, ErrAttemptTimeout) {
 			if resp != nil || body.closes.Load() != 1 || attemptCtx.Err() != context.Canceled {
 				t.Fatalf("iteration %d: timeout leaked response: resp=%#v closes=%d ctx=%v", i, resp, body.closes.Load(), attemptCtx.Err())
@@ -868,5 +868,153 @@ func TestTimedAttempt_CompletionTimeoutRacePreservesOwnership(t *testing.T) {
 		if body.closes.Load() != 1 || attemptCtx.Err() != context.Canceled {
 			t.Fatalf("iteration %d: successful body cleanup: closes=%d ctx=%v", i, body.closes.Load(), attemptCtx.Err())
 		}
+	}
+}
+
+func TestRoundTrip_AttemptTimeout_RequestOverride(t *testing.T) {
+	const timeout = 15 * time.Millisecond
+	tests := []struct {
+		name       string
+		configured time.Duration
+		context    func(context.Context) context.Context
+	}{
+		{
+			name:       "inherits configured timeout",
+			configured: timeout,
+			context:    func(ctx context.Context) context.Context { return ctx },
+		},
+		{
+			name:       "overrides configured timeout",
+			configured: time.Hour,
+			context: func(ctx context.Context) context.Context {
+				return WithAttemptTimeout(ctx, timeout)
+			},
+		},
+		{
+			name: "enables timeout when configuration disables it",
+			context: func(ctx context.Context) context.Context {
+				return WithAttemptTimeout(ctx, timeout)
+			},
+		},
+		{
+			name:       "latest override wins",
+			configured: time.Hour,
+			context: func(ctx context.Context) context.Context {
+				return WithAttemptTimeout(WithAttemptTimeout(ctx, 0), timeout)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var events []Event
+			tr := mustNewTransport(t, Config{
+				Endpoints:      testEndpoints("https://primary.test/rpc"),
+				AttemptTimeout: tt.configured,
+				Base: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					<-req.Context().Done()
+					return nil, req.Context().Err()
+				}),
+				OnEvent: func(_ context.Context, event Event) {
+					events = append(events, event)
+				},
+			})
+
+			parent, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			req := newTimedTestRequest(t).WithContext(tt.context(parent))
+			resp, err := tr.RoundTrip(req)
+			if resp != nil || !errors.Is(err, ErrAttemptTimeout) {
+				t.Fatalf("expected attempt timeout: resp=%#v err=%v", resp, err)
+			}
+			if parent.Err() != nil {
+				t.Fatalf("attempt timeout canceled logical context: %v", parent.Err())
+			}
+			if len(events) != 2 || events[0].Kind != EventAttempt || !errors.Is(events[0].Err, ErrAttemptTimeout) ||
+				events[1].Kind != EventResult || events[1].Err != err {
+				t.Fatalf("unexpected events: %#v", events)
+			}
+		})
+	}
+}
+
+func TestRoundTrip_AttemptTimeout_ZeroOverride(t *testing.T) {
+	body := newTrackingBody("ok")
+	var baseCtx context.Context
+	var calls int
+	tr := mustNewTransport(t, Config{
+		Endpoints:      testEndpoints("https://primary.test/rpc"),
+		AttemptTimeout: 10 * time.Millisecond,
+		Base: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			baseCtx = req.Context()
+			if calls == 1 {
+				return &http.Response{StatusCode: http.StatusOK, Body: body}, nil
+			}
+			<-req.Context().Done()
+			return nil, req.Context().Err()
+		}),
+	})
+
+	ctx := WithAttemptTimeout(context.Background(), time.Second)
+	ctx = WithAttemptTimeout(ctx, 0)
+	req := newTimedTestRequest(t).WithContext(ctx)
+	resp, err := tr.RoundTrip(req)
+	if err != nil || resp == nil || resp.Body != body || baseCtx != ctx {
+		t.Fatalf("zero override should use untimed transport: resp=%#v err=%v", resp, err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The override applies only to requests using the derived context.
+	resp, err = tr.RoundTrip(newTimedTestRequest(t))
+	if resp != nil || !errors.Is(err, ErrAttemptTimeout) || calls != 2 {
+		t.Fatalf("configured timeout should still apply: resp=%#v err=%v calls=%d", resp, err, calls)
+	}
+}
+
+func TestRoundTrip_AttemptTimeout_NegativeOverride(t *testing.T) {
+	body := newTrackingBody("not sent")
+	var eligibleCalls, permissionCalls, baseCalls int
+	var events []Event
+	tr := mustNewTransport(t, Config{
+		Endpoints: testEndpoints("https://primary.test/rpc"),
+		Eligible: func(EndpointID) bool {
+			eligibleCalls++
+			return true
+		},
+		PermissionPolicy: func(*http.Request) Permission {
+			permissionCalls++
+			return PermissionAllow
+		},
+		Base: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			baseCalls++
+			return newHTTPResp(http.StatusOK, "unexpected"), nil
+		}),
+		OnEvent: func(_ context.Context, event Event) {
+			events = append(events, event)
+		},
+	})
+
+	req, err := http.NewRequest(http.MethodPost, "https://primary.test/rpc", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req = req.WithContext(WithAttemptTimeout(req.Context(), -time.Millisecond))
+	resp, err := tr.RoundTrip(req)
+	if resp != nil || err == nil || !strings.Contains(err.Error(), "invalid attempt timeout -1ms") {
+		t.Fatalf("expected invalid timeout error: resp=%#v err=%v", resp, err)
+	}
+	var failoverErr *FailoverError
+	if errors.As(err, &failoverErr) {
+		t.Fatalf("validation error must not be wrapped in FailoverError: %v", err)
+	}
+	if eligibleCalls != 0 || permissionCalls != 0 || baseCalls != 0 || !body.Closed() {
+		t.Fatalf("request was not rejected before selection: eligible=%d permission=%d base=%d bodyClosed=%v",
+			eligibleCalls, permissionCalls, baseCalls, body.Closed())
+	}
+	if len(events) != 1 || events[0].Kind != EventResult || events[0].Err != err {
+		t.Fatalf("expected only a final error event: %#v", events)
 	}
 }

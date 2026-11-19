@@ -7,13 +7,27 @@ import (
 	"time"
 )
 
+type attemptTimeoutKey struct{}
+
+// WithAttemptTimeout returns a context that overrides Config.AttemptTimeout for a request.
+// Zero disables the per-attempt timeout. Negative durations cause RoundTrip to
+// return an error before trying an endpoint. A later override takes precedence.
+func WithAttemptTimeout(ctx context.Context, timeout time.Duration) context.Context {
+	return context.WithValue(ctx, attemptTimeoutKey{}, timeout)
+}
+
+func attemptTimeoutFromContext(ctx context.Context) (time.Duration, bool) {
+	timeout, ok := ctx.Value(attemptTimeoutKey{}).(time.Duration)
+	return timeout, ok
+}
+
 // roundTripWithAttemptTimeout runs one Base.RoundTrip call with a per-attempt timeout.
 // The response slot must be covered by the caller's deferred cleanup.
 // The returned duration measures Base.RoundTrip only.
-func (t *Transport) roundTripWithAttemptTimeout(req *http.Request, response **http.Response) (time.Duration, error) {
+func (t *Transport) roundTripWithAttemptTimeout(req *http.Request, timeout time.Duration, response **http.Response) (time.Duration, error) {
 	ctx, cancel := context.WithCancel(req.Context())
 	timedReq := req.WithContext(ctx)
-	timer := time.AfterFunc(t.cfg.attemptTimeout, cancel)
+	timer := time.AfterFunc(timeout, cancel)
 
 	var resp *http.Response
 	cleanupPending := true
