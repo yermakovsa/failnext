@@ -789,6 +789,8 @@ The repository includes go-ethereum examples for the main integration patterns:
 
 For a protocol-neutral example, see [`examples/ratelimit`](examples/ratelimit), which uses `OnEvent` and `Eligible` to temporarily skip endpoints that return HTTP 429. The example also configures HTTP 429 as a failover trigger.
 
+For latency-based quarantine, see [`examples/latency`](examples/latency), which uses `OnEvent` and `Eligible` to temporarily skip endpoints after consecutive slow attempts. Slow responses do not trigger immediate failover; the quarantine affects subsequent requests.
+
 ## What failnext does not do
 
 `failnext` is a focused HTTP failover transport, not a general resilience or RPC routing framework.
