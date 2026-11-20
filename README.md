@@ -787,6 +787,8 @@ The repository includes go-ethereum examples for the main integration patterns:
 * [`examples/goethereum/preferred-endpoint`](examples/goethereum/preferred-endpoint): try the provider that handled a previous request first for a follow-up request, without pinning to it.
 * [`examples/goethereum/skip-ineligible`](examples/goethereum/skip-ineligible): skip providers the application marks as unsuitable.
 
+For a protocol-neutral example, see [`examples/ratelimit`](examples/ratelimit), which uses `OnEvent` and `Eligible` to temporarily skip endpoints that return HTTP 429. The example also configures HTTP 429 as a failover trigger.
+
 ## What failnext does not do
 
 `failnext` is a focused HTTP failover transport, not a general resilience or RPC routing framework.
