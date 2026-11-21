@@ -7,6 +7,7 @@
 `failnext` is a Go library for client-side failover across a small, fixed set of HTTP or RPC providers.
 
 * **Primary RPC unavailable?** Try the next provider.
+* **Primary hangs?** Set a per-attempt timeout to leave time for a backup.
 * **One RPC is lagging or degraded?** Skip any provider your application decides not to use.
 * **HTTP 200 with a JSON-RPC error?** Let the app retry without that provider.
 * **Want reads to fail over, but not writes?** Keep writes from failing over to another provider.
