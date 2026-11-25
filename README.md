@@ -1,6 +1,6 @@
 # failnext
 
-[![CI](https://github.com/yermakovsa/failnext/actions/workflows/ci.yml/badge.svg)](https://github.com/yermakovsa/failnext/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/yermakovsa/failnext.svg)](https://pkg.go.dev/github.com/yermakovsa/failnext) [![Release](https://img.shields.io/github/v/release/yermakovsa/failnext)](https://github.com/yermakovsa/failnext/releases)
+[![CI](https://github.com/yermakovsa/failnext/actions/workflows/ci.yml/badge.svg)](https://github.com/yermakovsa/failnext/actions/workflows/ci.yml) [![Coverage](https://codecov.io/gh/yermakovsa/failnext/branch/main/graph/badge.svg)](https://app.codecov.io/gh/yermakovsa/failnext) [![Go Reference](https://pkg.go.dev/badge/github.com/yermakovsa/failnext.svg)](https://pkg.go.dev/github.com/yermakovsa/failnext) [![Release](https://img.shields.io/github/v/release/yermakovsa/failnext)](https://github.com/yermakovsa/failnext/releases)
 
 **fail → next**
 
